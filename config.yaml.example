@@ -1,0 +1,9 @@
+imap:
+  host: privateemail.com
+  port: 993
+  username: your-email@example.com
+  password: your-password
+  tls: true
+
+storage:
+  path: ./emails-backup.sqlite3

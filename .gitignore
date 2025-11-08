@@ -1,0 +1,6 @@
+imapsync
+config.yaml
+emails-backup/
+*.db
+*.sqlite3
+
