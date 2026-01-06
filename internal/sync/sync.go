@@ -6,6 +6,7 @@ import (
 	"time"
 
 	imap2 "github.com/emersion/go-imap/v2"
+	"github.com/newsamples/imapsync/internal/config"
 	"github.com/newsamples/imapsync/internal/imap"
 	"github.com/newsamples/imapsync/internal/storage"
 	"github.com/schollz/progressbar/v3"
@@ -17,6 +18,7 @@ type Syncer struct {
 	storage      *storage.Storage
 	log          *logrus.Logger
 	showProgress bool
+	gmailFilter  *GmailFilter
 }
 
 type Option func(*Syncer)
@@ -27,12 +29,23 @@ func WithProgress(enabled bool) Option {
 	}
 }
 
+func WithGmailConfig(cfg *config.GmailConfig, isGmail bool) Option {
+	return func(s *Syncer) {
+		s.gmailFilter = NewGmailFilter(cfg, isGmail)
+		// Enable Gmail label fetching if configured
+		if cfg.IsEnabled() && cfg.ShouldFetchLabels() && isGmail {
+			s.client.SetFetchGmailLabels(true)
+		}
+	}
+}
+
 func New(client *imap.Client, store *storage.Storage, log *logrus.Logger, opts ...Option) *Syncer {
 	s := &Syncer{
 		client:       client,
 		storage:      store,
 		log:          log,
 		showProgress: false,
+		gmailFilter:  nil, // Will be set when Gmail config is provided
 	}
 
 	for _, opt := range opts {
@@ -53,9 +66,19 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 		return fmt.Errorf("failed to list mailboxes: %w", err)
 	}
 
+	originalCount := len(mailboxes)
+
+	// Apply Gmail filtering if configured
+	if s.gmailFilter != nil {
+		mailboxes = s.gmailFilter.FilterMailboxes(mailboxes)
+		if filteredCount := originalCount - len(mailboxes); filteredCount > 0 {
+			s.log.Infof("Gmail filter: skipped %d mailboxes (%.0f%%)", filteredCount, float64(filteredCount)/float64(originalCount)*100)
+		}
+	}
+
 	mailboxes = prioritizeInbox(mailboxes)
 
-	s.log.Infof("Found %d mailboxes", len(mailboxes))
+	s.log.Infof("Found %d mailboxes to sync", len(mailboxes))
 
 	var totalStats Stats
 	processedMailboxes := 0
@@ -260,18 +283,19 @@ func (s *Syncer) convertToEmail(mailbox string, msg *imap.Message) *storage.Emai
 	}
 
 	return &storage.Email{
-		UID:        msg.UID,
-		Mailbox:    mailbox,
-		Subject:    subject,
-		From:       from,
-		To:         to,
-		Date:       imap.ParseEnvelopeDate(msg.Envelope),
-		Size:       msg.Size,
-		Flags:      imap.FlagsToStrings(msg.Flags),
-		Body:       msg.Body,
-		Headers:    msg.Headers,
-		RawMessage: msg.RawMessage,
-		Synced:     time.Now(),
+		UID:         msg.UID,
+		Mailbox:     mailbox,
+		Subject:     subject,
+		From:        from,
+		To:          to,
+		Date:        imap.ParseEnvelopeDate(msg.Envelope),
+		Size:        msg.Size,
+		Flags:       imap.FlagsToStrings(msg.Flags),
+		GmailLabels: msg.GmailLabels, // Include Gmail labels if fetched
+		Body:        msg.Body,
+		Headers:     msg.Headers,
+		RawMessage:  msg.RawMessage,
+		Synced:      time.Now(),
 	}
 }
 

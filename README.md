@@ -16,6 +16,11 @@ A lightweight email backup tool that syncs emails from IMAP servers to local sto
 - Graceful shutdown support (Ctrl+C)
 - Automatic reconnection on network errors with exponential backoff
 - Resilient to transient network issues
+- **Gmail-specific support:**
+  - Automatic Gmail server detection
+  - Skip duplicate emails (All Mail folder)
+  - Gmail labels extraction and storage
+  - Configurable folder filtering
 
 ## Installation
 
@@ -40,6 +45,59 @@ storage:
 ```
 
 See `config.yaml.example` for a template.
+
+### Gmail Configuration
+
+Gmail IMAP has special characteristics that require specific handling. This tool automatically detects Gmail servers and applies optimized settings:
+
+```yaml
+imap:
+  host: imap.gmail.com
+  port: 993
+  username: your-email@gmail.com
+  password: your-app-password  # Use App Password, not regular password
+  tls: true
+
+storage:
+  path: ./gmail-backup.sqlite3
+
+gmail:
+  # Enable/disable Gmail-specific handling (default: true, auto-detect)
+  enabled: true
+
+  # Skip [Gmail]/All Mail to avoid duplicates (default: true)
+  # All Mail contains ALL emails, so syncing it creates duplicates
+  skip_all_mail: true
+
+  # Fetch Gmail labels using X-GM-LABELS extension (default: true)
+  # Stores which labels each email has in Gmail
+  fetch_labels: true
+
+  # Exclude specific folders (optional)
+  # Use this to skip folders you don't want to backup
+  exclude_folders:
+    - "[Gmail]/Spam"
+    - "[Gmail]/Trash"
+
+  # Include only specific folders (optional, takes precedence)
+  # When set, ONLY these folders will be synced
+  # include_folders:
+  #   - "INBOX"
+  #   - "[Gmail]/Sent Mail"
+```
+
+**Gmail Notes:**
+
+1. **App Passwords**: Gmail requires App Passwords when 2FA is enabled. Generate one at https://myaccount.google.com/apppasswords
+2. **All Mail**: Contains duplicates of all emails from other folders. Skipped by default to save space and time.
+3. **Labels vs Folders**: Gmail uses labels, not folders. An email can have multiple labels and appear in multiple "folders".
+4. **Localized Folders**: Gmail folder names vary by language (`[Gmail]` in English, `[Google Mail]` in German, etc.). The tool handles both.
+5. **Non-Selectable Folders**: The `[Gmail]` folder itself is just a namespace container and is automatically skipped.
+6. **Recommended Folders**:
+   - `INBOX` - Your inbox
+   - `[Gmail]/Sent Mail` - Sent emails
+   - `[Gmail]/Drafts` - Draft emails
+   - `[Gmail]/Starred` - Starred emails
 
 ## Usage
 
@@ -90,6 +148,7 @@ The tool stores:
 
 - Email content (headers and body)
 - Email metadata (subject, from, to, date, size, flags)
+- Gmail labels (when syncing from Gmail with labels enabled)
 - Mailbox state (UIDValidity, last synced UID)
 
 ## Storage

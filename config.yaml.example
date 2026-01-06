@@ -7,3 +7,25 @@ imap:
 
 storage:
   path: ./emails-backup.sqlite3
+
+# Gmail-specific configuration (optional)
+# All options have sensible defaults and are auto-detected
+gmail:
+  # Enable/disable Gmail-specific handling (default: true, auto-detect)
+  # enabled: true
+
+  # Skip [Gmail]/All Mail to avoid duplicates (default: true)
+  # skip_all_mail: true
+
+  # Fetch Gmail labels using X-GM-LABELS extension (default: true)
+  # fetch_labels: true
+
+  # Exclude specific folders (exact match or wildcards)
+  # exclude_folders:
+  #   - "[Gmail]/Spam"
+  #   - "[Gmail]/Trash"
+
+  # Include only specific folders (takes precedence over exclude)
+  # include_folders:
+  #   - "INBOX"
+  #   - "[Gmail]/Sent Mail"

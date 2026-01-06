@@ -10,8 +10,8 @@ import (
 	"sort"
 	"time"
 
-	_ "modernc.org/sqlite" // sqlite driver
 	"github.com/sirupsen/logrus"
+	_ "modernc.org/sqlite" // sqlite driver
 )
 
 type Storage struct {
@@ -21,18 +21,19 @@ type Storage struct {
 }
 
 type Email struct {
-	UID        uint32    `json:"uid"`
-	Mailbox    string    `json:"mailbox"`
-	Subject    string    `json:"subject"`
-	From       string    `json:"from"`
-	To         []string  `json:"to"`
-	Date       time.Time `json:"date"`
-	Size       uint32    `json:"size"`
-	Flags      []string  `json:"flags"`
-	Body       []byte    `json:"body"`
-	Headers    []byte    `json:"headers"`
-	RawMessage []byte    `json:"raw_message"`
-	Synced     time.Time `json:"synced"`
+	UID         uint32    `json:"uid"`
+	Mailbox     string    `json:"mailbox"`
+	Subject     string    `json:"subject"`
+	From        string    `json:"from"`
+	To          []string  `json:"to"`
+	Date        time.Time `json:"date"`
+	Size        uint32    `json:"size"`
+	Flags       []string  `json:"flags"`
+	GmailLabels []string  `json:"gmail_labels,omitempty"` // Gmail labels from X-GM-LABELS
+	Body        []byte    `json:"body"`
+	Headers     []byte    `json:"headers"`
+	RawMessage  []byte    `json:"raw_message"`
+	Synced      time.Time `json:"synced"`
 }
 
 type MailboxState struct {
@@ -99,6 +100,7 @@ func (s *Storage) initSchema() error {
 		date INTEGER,
 		size INTEGER,
 		flags TEXT,
+		gmail_labels TEXT,
 		synced INTEGER,
 		PRIMARY KEY (mailbox, uid)
 	);
@@ -181,6 +183,11 @@ func (s *Storage) SaveEmail(email *Email) error {
 		return fmt.Errorf("failed to marshal flags: %w", err)
 	}
 
+	gmailLabelsJSON, err := json.Marshal(email.GmailLabels)
+	if err != nil {
+		return fmt.Errorf("failed to marshal gmail labels: %w", err)
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -189,8 +196,8 @@ func (s *Storage) SaveEmail(email *Email) error {
 	// Insert metadata
 	metadataQuery := `
 	INSERT OR REPLACE INTO emails (
-		mailbox, uid, subject, from_addr, to_addrs, date, size, flags, synced
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		mailbox, uid, subject, from_addr, to_addrs, date, size, flags, gmail_labels, synced
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	_, err = tx.Exec(metadataQuery,
 		email.Mailbox,
@@ -201,6 +208,7 @@ func (s *Storage) SaveEmail(email *Email) error {
 		email.Date.Unix(),
 		email.Size,
 		string(flagsJSON),
+		string(gmailLabelsJSON),
 		email.Synced.Unix(),
 	)
 	if err != nil {
@@ -260,8 +268,8 @@ func (s *Storage) SaveEmailBatch(emails []*Email) error {
 
 	metadataStmt, err := tx.Prepare(`
 		INSERT OR REPLACE INTO emails (
-			mailbox, uid, subject, from_addr, to_addrs, date, size, flags, synced
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			mailbox, uid, subject, from_addr, to_addrs, date, size, flags, gmail_labels, synced
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		tx.Rollback()
@@ -293,6 +301,12 @@ func (s *Storage) SaveEmailBatch(emails []*Email) error {
 			return fmt.Errorf("failed to marshal flags: %w", err)
 		}
 
+		gmailLabelsJSON, err := json.Marshal(email.GmailLabels)
+		if err != nil {
+			tx.Rollback()
+			return fmt.Errorf("failed to marshal gmail labels: %w", err)
+		}
+
 		// Insert metadata
 		_, err = metadataStmt.Exec(
 			email.Mailbox,
@@ -303,6 +317,7 @@ func (s *Storage) SaveEmailBatch(emails []*Email) error {
 			email.Date.Unix(),
 			email.Size,
 			string(flagsJSON),
+			string(gmailLabelsJSON),
 			email.Synced.Unix(),
 		)
 		if err != nil {
@@ -348,7 +363,7 @@ func (s *Storage) SaveEmailBatch(emails []*Email) error {
 
 func (s *Storage) GetEmail(mailbox string, uid uint32) (*Email, error) {
 	query := `
-		SELECT e.mailbox, e.uid, e.subject, e.from_addr, e.to_addrs, e.date, e.size, e.flags, e.synced,
+		SELECT e.mailbox, e.uid, e.subject, e.from_addr, e.to_addrs, e.date, e.size, e.flags, e.gmail_labels, e.synced,
 			   c.body, c.headers, c.raw_message
 		FROM emails e
 		LEFT JOIN email_content c ON e.mailbox = c.mailbox AND e.uid = c.uid
@@ -356,7 +371,7 @@ func (s *Storage) GetEmail(mailbox string, uid uint32) (*Email, error) {
 	`
 
 	var email Email
-	var toJSON, flagsJSON string
+	var toJSON, flagsJSON, gmailLabelsJSON string
 	var dateUnix, syncedUnix int64
 	var compressedBody, compressedHeaders, compressedRawMessage []byte
 
@@ -369,6 +384,7 @@ func (s *Storage) GetEmail(mailbox string, uid uint32) (*Email, error) {
 		&dateUnix,
 		&email.Size,
 		&flagsJSON,
+		&gmailLabelsJSON,
 		&syncedUnix,
 		&compressedBody,
 		&compressedHeaders,
@@ -388,6 +404,12 @@ func (s *Storage) GetEmail(mailbox string, uid uint32) (*Email, error) {
 
 	if err := json.Unmarshal([]byte(flagsJSON), &email.Flags); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal flags: %w", err)
+	}
+
+	if gmailLabelsJSON != "" && gmailLabelsJSON != "null" {
+		if err := json.Unmarshal([]byte(gmailLabelsJSON), &email.GmailLabels); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal gmail labels: %w", err)
+		}
 	}
 
 	// Decompress binary content
@@ -498,7 +520,7 @@ func (s *Storage) CountMessages(mailbox string) (int, error) {
 
 func (s *Storage) ListEmails(mailbox string, limit, offset int) ([]*Email, error) {
 	query := `
-		SELECT mailbox, uid, subject, from_addr, to_addrs, date, size, flags, synced
+		SELECT mailbox, uid, subject, from_addr, to_addrs, date, size, flags, gmail_labels, synced
 		FROM emails
 		WHERE mailbox = ?
 		ORDER BY uid DESC
@@ -514,7 +536,7 @@ func (s *Storage) ListEmails(mailbox string, limit, offset int) ([]*Email, error
 	var emails []*Email
 	for rows.Next() {
 		var email Email
-		var toJSON, flagsJSON string
+		var toJSON, flagsJSON, gmailLabelsJSON string
 		var dateUnix, syncedUnix int64
 
 		err := rows.Scan(
@@ -526,6 +548,7 @@ func (s *Storage) ListEmails(mailbox string, limit, offset int) ([]*Email, error
 			&dateUnix,
 			&email.Size,
 			&flagsJSON,
+			&gmailLabelsJSON,
 			&syncedUnix,
 		)
 		if err != nil {
@@ -538,6 +561,12 @@ func (s *Storage) ListEmails(mailbox string, limit, offset int) ([]*Email, error
 
 		if err := json.Unmarshal([]byte(flagsJSON), &email.Flags); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal flags: %w", err)
+		}
+
+		if gmailLabelsJSON != "" && gmailLabelsJSON != "null" {
+			if err := json.Unmarshal([]byte(gmailLabelsJSON), &email.GmailLabels); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal gmail labels: %w", err)
+			}
 		}
 
 		email.Date = time.Unix(dateUnix, 0)

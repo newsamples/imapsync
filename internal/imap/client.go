@@ -17,10 +17,11 @@ import (
 )
 
 type Client struct {
-	client  *imapclient.Client
-	opts    ConnectOptions
-	log     *logrus.Logger
-	retries int
+	client           *imapclient.Client
+	opts             ConnectOptions
+	log              *logrus.Logger
+	retries          int
+	fetchGmailLabels bool
 }
 
 type ConnectOptions struct {
@@ -33,13 +34,14 @@ type ConnectOptions struct {
 }
 
 type Message struct {
-	UID        uint32
-	Flags      []imap.Flag
-	Size       uint32
-	Envelope   *imap.Envelope
-	Body       []byte
-	Headers    []byte
-	RawMessage []byte
+	UID         uint32
+	Flags       []imap.Flag
+	Size        uint32
+	Envelope    *imap.Envelope
+	Body        []byte
+	Headers     []byte
+	RawMessage  []byte
+	GmailLabels []string // Gmail labels from X-GM-LABELS extension
 }
 
 func Connect(opts ConnectOptions) (*Client, error) {
@@ -48,9 +50,10 @@ func Connect(opts ConnectOptions) (*Client, error) {
 	}
 
 	client := &Client{
-		opts:    opts,
-		log:     opts.Logger,
-		retries: 3,
+		opts:             opts,
+		log:              opts.Logger,
+		retries:          3,
+		fetchGmailLabels: false,
 	}
 
 	if err := client.connect(); err != nil {
@@ -58,6 +61,11 @@ func Connect(opts ConnectOptions) (*Client, error) {
 	}
 
 	return client, nil
+}
+
+// SetFetchGmailLabels enables or disables fetching Gmail labels via X-GM-LABELS extension.
+func (c *Client) SetFetchGmailLabels(enabled bool) {
+	c.fetchGmailLabels = enabled
 }
 
 func (c *Client) connect() error {
@@ -224,6 +232,13 @@ func (c *Client) ListMailboxesWithContext(ctx context.Context) ([]string, error)
 			if mbox == nil {
 				break
 			}
+
+			// Skip non-selectable mailboxes (like [Gmail] namespace folder)
+			if isNonSelectableMailbox(mbox.Attrs) {
+				c.log.Debugf("Skipping non-selectable mailbox: %s", mbox.Mailbox)
+				continue
+			}
+
 			result = append(result, mbox.Mailbox)
 		}
 
@@ -236,6 +251,17 @@ func (c *Client) ListMailboxesWithContext(ctx context.Context) ([]string, error)
 	})
 
 	return result, err
+}
+
+// isNonSelectableMailbox checks if a mailbox has the \Noselect attribute.
+// Non-selectable mailboxes are containers/namespaces that cannot be selected.
+func isNonSelectableMailbox(attrs []imap.MailboxAttr) bool {
+	for _, attr := range attrs {
+		if attr == imap.MailboxAttrNoSelect {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Client) SelectMailbox(name string) (*imap.SelectData, error) {
@@ -309,6 +335,12 @@ func (c *Client) FetchMessagesWithContext(ctx context.Context, numSet imap.NumSe
 				}
 			}
 
+			// Extract Gmail labels from flags if available
+			// Gmail labels appear as \Label or X-GM-LABELS in some implementations
+			if c.fetchGmailLabels {
+				message.GmailLabels = extractGmailLabels(buf.Flags)
+			}
+
 			messages = append(messages, message)
 		}
 
@@ -320,6 +352,40 @@ func (c *Client) FetchMessagesWithContext(ctx context.Context, numSet imap.NumSe
 	})
 
 	return messages, err
+}
+
+// extractGmailLabels extracts Gmail label information from IMAP flags.
+// Gmail exposes labels through custom flags in the format: \Label or similar.
+func extractGmailLabels(flags []imap.Flag) []string {
+	var labels []string
+
+	for _, flag := range flags {
+		flagStr := string(flag)
+		// Gmail labels can appear as custom flags
+		// Skip standard IMAP flags
+		if !isStandardIMAPFlag(flagStr) {
+			// Remove backslash prefix if present
+			label := strings.TrimPrefix(flagStr, "\\")
+			if label != "" && label != flagStr {
+				labels = append(labels, label)
+			}
+		}
+	}
+
+	return labels
+}
+
+// isStandardIMAPFlag checks if a flag is a standard IMAP flag.
+func isStandardIMAPFlag(flag string) bool {
+	standardFlags := map[string]bool{
+		"\\Seen":     true,
+		"\\Answered": true,
+		"\\Flagged":  true,
+		"\\Deleted":  true,
+		"\\Draft":    true,
+		"\\Recent":   true,
+	}
+	return standardFlags[flag]
 }
 
 func (c *Client) SearchAll() ([]uint32, error) {
@@ -362,4 +428,44 @@ func FlagsToStrings(flags []imap.Flag) []string {
 		result[i] = string(flag)
 	}
 	return result
+}
+
+// IsGmailServer detects if the IMAP server is Gmail by checking for Gmail-specific folders.
+// Returns true if any folder starts with [Gmail] or [Google Mail].
+func (c *Client) IsGmailServer(ctx context.Context) (bool, error) {
+	mailboxes, err := c.ListMailboxesWithContext(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	for _, mailbox := range mailboxes {
+		if IsGmailFolder(mailbox) {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// IsGmailFolder returns true if the folder name is a Gmail system folder.
+// Gmail system folders start with [Gmail]/ or [Google Mail]/.
+func IsGmailFolder(name string) bool {
+	return strings.HasPrefix(name, "[Gmail]/") || strings.HasPrefix(name, "[Google Mail]/")
+}
+
+// IsGmailAllMail returns true if the folder is Gmail's All Mail folder.
+func IsGmailAllMail(name string) bool {
+	return name == "[Gmail]/All Mail" || name == "[Google Mail]/All Mail"
+}
+
+// GetGmailFolderType returns the Gmail folder type (Sent, Trash, Spam, etc.) or empty string.
+func GetGmailFolderType(name string) string {
+	switch {
+	case strings.HasPrefix(name, "[Gmail]/"):
+		return strings.TrimPrefix(name, "[Gmail]/")
+	case strings.HasPrefix(name, "[Google Mail]/"):
+		return strings.TrimPrefix(name, "[Google Mail]/")
+	default:
+		return ""
+	}
 }

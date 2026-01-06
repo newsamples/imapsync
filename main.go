@@ -110,7 +110,24 @@ func runSync(cmd *cobra.Command, _ []string) error {
 
 	log.Infof("Opened storage at: %s", cfg.Storage.Path)
 
-	syncer := sync.New(client, store, log, sync.WithProgress(showProgress))
+	// Detect if server is Gmail
+	isGmail := false
+	if cfg.Gmail.IsEnabled() {
+		detected, err := client.IsGmailServer(ctx)
+		if err != nil {
+			log.WithError(err).Warn("Failed to detect Gmail server, continuing without Gmail-specific handling")
+		} else {
+			isGmail = detected
+			if isGmail {
+				log.Info("Gmail server detected, applying Gmail-specific configuration")
+			}
+		}
+	}
+
+	syncer := sync.New(client, store, log,
+		sync.WithProgress(showProgress),
+		sync.WithGmailConfig(&cfg.Gmail, isGmail),
+	)
 
 	log.Info("Starting email sync...")
 
