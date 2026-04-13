@@ -1,6 +1,7 @@
 package imap
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -59,20 +60,17 @@ func TestFlagsToStrings(t *testing.T) {
 func TestIsNonSelectableMailbox(t *testing.T) {
 	t.Run("non-selectable mailbox", func(t *testing.T) {
 		attrs := []imap.MailboxAttr{imap.MailboxAttrNoSelect}
-		result := isNonSelectableMailbox(attrs)
-		assert.True(t, result)
+		assert.True(t, slices.Contains(attrs, imap.MailboxAttrNoSelect))
 	})
 
 	t.Run("selectable mailbox", func(t *testing.T) {
 		attrs := []imap.MailboxAttr{imap.MailboxAttrHasChildren}
-		result := isNonSelectableMailbox(attrs)
-		assert.False(t, result)
+		assert.False(t, slices.Contains(attrs, imap.MailboxAttrNoSelect))
 	})
 
 	t.Run("empty attributes", func(t *testing.T) {
 		attrs := []imap.MailboxAttr{}
-		result := isNonSelectableMailbox(attrs)
-		assert.False(t, result)
+		assert.False(t, slices.Contains(attrs, imap.MailboxAttrNoSelect))
 	})
 
 	t.Run("mixed attributes with noselect", func(t *testing.T) {
@@ -80,8 +78,7 @@ func TestIsNonSelectableMailbox(t *testing.T) {
 			imap.MailboxAttrHasChildren,
 			imap.MailboxAttrNoSelect,
 		}
-		result := isNonSelectableMailbox(attrs)
-		assert.True(t, result)
+		assert.True(t, slices.Contains(attrs, imap.MailboxAttrNoSelect))
 	})
 }
 

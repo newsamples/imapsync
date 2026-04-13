@@ -349,7 +349,7 @@ func (s *Server) writeJSON(w http.ResponseWriter, data interface{}) {
 }
 
 func (s *Server) getUIHTML() string {
-	return strings.TrimSpace(`
+	return strings.TrimSpace(strings.ReplaceAll(`
 <!DOCTYPE html>
 <html>
 <head>
@@ -563,12 +563,12 @@ func (s *Server) getUIHTML() string {
             const mailboxes = await res.json();
 
             const container = document.getElementById('mailboxes');
-            container.innerHTML = mailboxes.map(mb => ` + "`" + `
+            container.innerHTML = mailboxes.map(mb => §
                 <div class="mailbox-item" data-mailbox="${escapeHtml(mb.name)}">
                     <div class="mailbox-name">${escapeHtml(mb.name)}</div>
                     <div class="mailbox-count">${mb.count || 0}</div>
                 </div>
-            ` + "`" + `).join('');
+            §).join('');
 
             document.querySelectorAll('.mailbox-item').forEach(el => {
                 el.addEventListener('click', () => {
@@ -593,7 +593,7 @@ func (s *Server) getUIHTML() string {
             const container = document.getElementById('emails');
             container.innerHTML = '<div class="loading">Loading...</div>';
 
-            const res = await fetch(` + "`" + `/api/v1/mailboxes/${encodeURIComponent(mailbox)}/emails?page=${page}&limit=${pageLimit}` + "`" + `);
+            const res = await fetch(§/api/v1/mailboxes/${encodeURIComponent(mailbox)}/emails?page=${page}&limit=${pageLimit}§);
             const data = await res.json();
 
             if (!data.emails || data.emails.length === 0) {
@@ -605,13 +605,13 @@ func (s *Server) getUIHTML() string {
             totalPages = data.total_pages || 1;
             updatePagination();
 
-            container.innerHTML = data.emails.map(email => ` + "`" + `
+            container.innerHTML = data.emails.map(email => §
                 <div class="email-item" data-mailbox="${escapeHtml(mailbox)}" data-uid="${email.uid}">
                     <div class="email-subject">${escapeHtml(email.subject || '(No Subject)')}</div>
                     <div class="email-from">${escapeHtml(email.from || '(Unknown)')}</div>
                     <div class="email-date">${new Date(email.date).toLocaleString()}</div>
                 </div>
-            ` + "`" + `).join('');
+            §).join('');
 
             document.querySelectorAll('.email-item').forEach(el => {
                 el.addEventListener('click', function() {
@@ -632,7 +632,7 @@ func (s *Server) getUIHTML() string {
         }
 
         function updatePagination() {
-            document.getElementById('page-info').textContent = ` + "`" + `Page ${currentPage} of ${totalPages}` + "`" + `;
+            document.getElementById('page-info').textContent = §Page ${currentPage} of ${totalPages}§;
             document.getElementById('first-page').disabled = currentPage === 1;
             document.getElementById('prev-page').disabled = currentPage === 1;
             document.getElementById('next-page').disabled = currentPage === totalPages;
@@ -647,11 +647,11 @@ func (s *Server) getUIHTML() string {
                 }
             });
 
-            const res = await fetch(` + "`" + `/api/v1/mailboxes/${encodeURIComponent(mailbox)}/emails/${uid}` + "`" + `);
+            const res = await fetch(§/api/v1/mailboxes/${encodeURIComponent(mailbox)}/emails/${uid}§);
             const email = await res.json();
 
             const viewer = document.querySelector('.email-viewer');
-            viewer.innerHTML = ` + "`" + `
+            viewer.innerHTML = §
                 <div class="email-header">
                     <div class="email-header-top">
                         <h1>${escapeHtml(email.subject || '(No Subject)')}</h1>
@@ -669,7 +669,7 @@ func (s *Server) getUIHTML() string {
                     </div>
                 </div>
                 <div class="email-body" id="email-body-content"></div>
-            ` + "`" + `;
+            §;
 
             renderEmailBody(email.body);
         }
@@ -719,7 +719,7 @@ func (s *Server) getUIHTML() string {
     </script>
 </body>
 </html>
-`)
+`, "§", "\x60"))
 }
 
 func (s *Server) Run(addr string) error {

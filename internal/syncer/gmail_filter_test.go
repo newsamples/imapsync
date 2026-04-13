@@ -1,4 +1,4 @@
-package sync
+package syncer
 
 import (
 	"testing"
@@ -297,4 +297,28 @@ func TestGetGmailFolderInfo(t *testing.T) {
 
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+func TestGetFilteredMailboxCount(t *testing.T) {
+	cfg := config.GmailConfig{}
+	f := NewGmailFilter(&cfg, true)
+	mailboxes := []string{"INBOX", "[Gmail]/All Mail", "Sent"}
+	total, filtered, skipped := f.GetFilteredMailboxCount(mailboxes)
+	assert.Equal(t, 3, total)
+	assert.Equal(t, 2, filtered)
+	assert.Equal(t, 1, skipped)
+}
+
+func TestIsGmailSystemFolder(t *testing.T) {
+	assert.True(t, IsGmailSystemFolder("[Gmail]/All Mail"))
+	assert.True(t, IsGmailSystemFolder("[Google Mail]/Sent Mail"))
+	assert.False(t, IsGmailSystemFolder("INBOX"))
+	assert.False(t, IsGmailSystemFolder("Sent"))
+}
+
+func TestSimpleWildcardMatch_ExactMatch(t *testing.T) {
+	// matchesPattern pre-checks exact equality before calling simpleWildcardMatch,
+	// so the only way to cover the exact-match branch inside simpleWildcardMatch
+	// is to call it directly.
+	assert.True(t, simpleWildcardMatch("[Gmail]/Spam", "[Gmail]/Spam"))
 }

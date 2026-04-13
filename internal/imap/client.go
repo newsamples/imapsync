@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/emersion/go-imap/v2"
@@ -22,6 +24,8 @@ type Client struct {
 	log              *logrus.Logger
 	retries          int
 	fetchGmailLabels bool
+	mu               sync.Mutex
+	unilateralNotify func()
 }
 
 type ConnectOptions struct {
@@ -71,17 +75,27 @@ func (c *Client) SetFetchGmailLabels(enabled bool) {
 func (c *Client) connect() error {
 	addr := fmt.Sprintf("%s:%d", c.opts.Host, c.opts.Port)
 
+	opts := &imapclient.Options{
+		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
+			Mailbox: func(_ *imapclient.UnilateralDataMailbox) {
+				c.mu.Lock()
+				fn := c.unilateralNotify
+				c.mu.Unlock()
+				if fn != nil {
+					fn()
+				}
+			},
+		},
+	}
+
 	var client *imapclient.Client
 	var err error
 
 	if c.opts.TLS {
-		client, err = imapclient.DialTLS(addr, &imapclient.Options{
-			TLSConfig: &tls.Config{
-				ServerName: c.opts.Host,
-			},
-		})
+		opts.TLSConfig = &tls.Config{ServerName: c.opts.Host}
+		client, err = imapclient.DialTLS(addr, opts)
 	} else {
-		client, err = imapclient.DialInsecure(addr, &imapclient.Options{})
+		client, err = imapclient.DialInsecure(addr, opts)
 	}
 
 	if err != nil {
@@ -175,6 +189,10 @@ func isNetworkError(err error) bool {
 }
 
 func (c *Client) withRetry(ctx context.Context, operation func() error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
 	var lastErr error
 
 	for attempt := 0; attempt <= c.retries; attempt++ {
@@ -234,7 +252,7 @@ func (c *Client) ListMailboxesWithContext(ctx context.Context) ([]string, error)
 			}
 
 			// Skip non-selectable mailboxes (like [Gmail] namespace folder)
-			if isNonSelectableMailbox(mbox.Attrs) {
+			if slices.Contains(mbox.Attrs, imap.MailboxAttrNoSelect) {
 				c.log.Debugf("Skipping non-selectable mailbox: %s", mbox.Mailbox)
 				continue
 			}
@@ -251,17 +269,6 @@ func (c *Client) ListMailboxesWithContext(ctx context.Context) ([]string, error)
 	})
 
 	return result, err
-}
-
-// isNonSelectableMailbox checks if a mailbox has the \Noselect attribute.
-// Non-selectable mailboxes are containers/namespaces that cannot be selected.
-func isNonSelectableMailbox(attrs []imap.MailboxAttr) bool {
-	for _, attr := range attrs {
-		if attr == imap.MailboxAttrNoSelect {
-			return true
-		}
-	}
-	return false
 }
 
 func (c *Client) SelectMailbox(name string) (*imap.SelectData, error) {
@@ -438,19 +445,57 @@ func (c *Client) IsGmailServer(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
-	for _, mailbox := range mailboxes {
-		if IsGmailFolder(mailbox) {
-			return true, nil
-		}
-	}
-
-	return false, nil
+	return slices.ContainsFunc(mailboxes, IsGmailFolder), nil
 }
 
 // IsGmailFolder returns true if the folder name is a Gmail system folder.
 // Gmail system folders start with [Gmail]/ or [Google Mail]/.
 func IsGmailFolder(name string) bool {
 	return strings.HasPrefix(name, "[Gmail]/") || strings.HasPrefix(name, "[Google Mail]/")
+}
+
+// IdleMailbox selects the given mailbox and enters IMAP IDLE mode.
+// It returns when a server-side unilateral update is received or the context is cancelled.
+// Returns true if a mailbox update was received (new/deleted messages).
+func (c *Client) IdleMailbox(ctx context.Context, mailbox string) (bool, error) {
+	if _, err := c.SelectMailboxWithContext(ctx, mailbox); err != nil {
+		return false, err
+	}
+
+	notified := make(chan struct{}, 1)
+
+	c.mu.Lock()
+	c.unilateralNotify = func() {
+		select {
+		case notified <- struct{}{}:
+		default:
+		}
+	}
+	c.mu.Unlock()
+
+	defer func() {
+		c.mu.Lock()
+		c.unilateralNotify = nil
+		c.mu.Unlock()
+	}()
+
+	idleCmd, err := c.client.Idle()
+	if err != nil {
+		return false, fmt.Errorf("failed to start IDLE: %w", err)
+	}
+
+	var updated bool
+	select {
+	case <-ctx.Done():
+	case <-notified:
+		updated = true
+	}
+
+	if err := idleCmd.Close(); err != nil {
+		return updated, fmt.Errorf("failed to stop IDLE: %w", err)
+	}
+
+	return updated, nil
 }
 
 // IsGmailAllMail returns true if the folder is Gmail's All Mail folder.

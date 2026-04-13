@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +18,7 @@ func TestStorage(t *testing.T) {
 
 	t.Run("save and get email", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		dbPath := tmpDir + "/test.db"
+		dbPath := filepath.Join(tmpDir, "test.db")
 		s, err := New(dbPath, log)
 		require.NoError(t, err)
 		defer s.Close()
@@ -55,7 +57,7 @@ func TestStorage(t *testing.T) {
 
 	t.Run("save batch of emails", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		dbPath := tmpDir + "/test.db"
+		dbPath := filepath.Join(tmpDir, "test.db")
 		s, err := New(dbPath, log)
 		require.NoError(t, err)
 		defer s.Close()
@@ -109,7 +111,7 @@ func TestStorage(t *testing.T) {
 
 	t.Run("save empty batch", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		dbPath := tmpDir + "/test.db"
+		dbPath := filepath.Join(tmpDir, "test.db")
 		s, err := New(dbPath, log)
 		require.NoError(t, err)
 		defer s.Close()
@@ -120,7 +122,7 @@ func TestStorage(t *testing.T) {
 
 	t.Run("get non-existent email", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		dbPath := tmpDir + "/test.db"
+		dbPath := filepath.Join(tmpDir, "test.db")
 		s, err := New(dbPath, log)
 		require.NoError(t, err)
 		defer s.Close()
@@ -132,7 +134,7 @@ func TestStorage(t *testing.T) {
 
 	t.Run("save and get mailbox state", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		dbPath := tmpDir + "/test.db"
+		dbPath := filepath.Join(tmpDir, "test.db")
 		s, err := New(dbPath, log)
 		require.NoError(t, err)
 		defer s.Close()
@@ -157,7 +159,7 @@ func TestStorage(t *testing.T) {
 
 	t.Run("get non-existent mailbox state", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		dbPath := tmpDir + "/test.db"
+		dbPath := filepath.Join(tmpDir, "test.db")
 		s, err := New(dbPath, log)
 		require.NoError(t, err)
 		defer s.Close()
@@ -169,7 +171,7 @@ func TestStorage(t *testing.T) {
 
 	t.Run("list mailboxes", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		dbPath := tmpDir + "/test.db"
+		dbPath := filepath.Join(tmpDir, "test.db")
 		s, err := New(dbPath, log)
 		require.NoError(t, err)
 		defer s.Close()
@@ -199,7 +201,7 @@ func TestCountMessages(t *testing.T) {
 	log.SetLevel(logrus.PanicLevel)
 
 	tmpDir := t.TempDir()
-	dbPath := tmpDir + "/test.db"
+	dbPath := filepath.Join(tmpDir, "test.db")
 	s, err := New(dbPath, log)
 	require.NoError(t, err)
 	defer s.Close()
@@ -240,7 +242,7 @@ func TestCountMessages(t *testing.T) {
 
 func TestCompression(t *testing.T) {
 	t.Run("compress and decompress data", func(t *testing.T) {
-		original := []byte("This is a test message with some content that should be compressed. " + strings.Repeat("Repetitive data. ", 50))
+		original := []byte(fmt.Sprintf("This is a test message with some content that should be compressed. %s", strings.Repeat("Repetitive data. ", 50)))
 
 		compressed, err := compressData(original)
 		require.NoError(t, err)
@@ -287,12 +289,100 @@ func TestCompression(t *testing.T) {
 	})
 }
 
+func TestListEmails(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	tmpDir := t.TempDir()
+	s, err := New(filepath.Join(tmpDir, "test.db"), log)
+	require.NoError(t, err)
+	defer s.Close()
+
+	emails := []*Email{
+		{
+			UID:     1,
+			Mailbox: "INBOX",
+			Subject: "First",
+			From:    "a@b.com",
+			To:      []string{"c@d.com"},
+			Date:    time.Now(),
+			Size:    100,
+			Synced:  time.Now(),
+		},
+		{
+			UID:     2,
+			Mailbox: "INBOX",
+			Subject: "Second",
+			From:    "a@b.com",
+			To:      []string{"c@d.com"},
+			Date:    time.Now(),
+			Size:    200,
+			Synced:  time.Now(),
+		},
+		{
+			UID:     3,
+			Mailbox: "INBOX",
+			Subject: "Third",
+			From:    "a@b.com",
+			To:      []string{"c@d.com"},
+			Date:    time.Now(),
+			Size:    300,
+			Synced:  time.Now(),
+		},
+		{
+			UID:     1,
+			Mailbox: "Sent",
+			Subject: "Sent1",
+			From:    "a@b.com",
+			To:      []string{"c@d.com"},
+			Date:    time.Now(),
+			Size:    50,
+			Synced:  time.Now(),
+		},
+	}
+
+	for _, e := range emails {
+		require.NoError(t, s.SaveEmail(e))
+	}
+
+	t.Run("list all inbox", func(t *testing.T) {
+		result, err := s.ListEmails("INBOX", 10, 0)
+		require.NoError(t, err)
+		assert.Len(t, result, 3)
+	})
+
+	t.Run("list with limit", func(t *testing.T) {
+		result, err := s.ListEmails("INBOX", 2, 0)
+		require.NoError(t, err)
+		assert.Len(t, result, 2)
+	})
+
+	t.Run("list with offset", func(t *testing.T) {
+		result, err := s.ListEmails("INBOX", 10, 2)
+		require.NoError(t, err)
+		assert.Len(t, result, 1)
+	})
+
+	t.Run("list different mailbox", func(t *testing.T) {
+		result, err := s.ListEmails("Sent", 10, 0)
+		require.NoError(t, err)
+		assert.Len(t, result, 1)
+		assert.Equal(t, "Sent1", result[0].Subject)
+	})
+
+	t.Run("list empty mailbox", func(t *testing.T) {
+		result, err := s.ListEmails("Drafts", 10, 0)
+		require.NoError(t, err)
+		assert.Empty(t, result)
+	})
+}
+
 func TestEmailCompressionRoundTrip(t *testing.T) {
 	log := logrus.New()
 	log.SetLevel(logrus.PanicLevel)
 
 	tmpDir := t.TempDir()
-	dbPath := tmpDir + "/test.db"
+	dbPath := filepath.Join(tmpDir, "test.db")
 	s, err := New(dbPath, log)
 	require.NoError(t, err)
 	defer s.Close()
@@ -306,9 +396,9 @@ func TestEmailCompressionRoundTrip(t *testing.T) {
 		Date:       time.Now().Truncate(time.Second),
 		Size:       1024,
 		Flags:      []string{"\\Seen"},
-		Body:       []byte("This is a long email body that should benefit from compression. " + strings.Repeat("Lorem ipsum dolor sit amet. ", 100)),
+		Body:       []byte(fmt.Sprintf("This is a long email body that should benefit from compression. %s", strings.Repeat("Lorem ipsum dolor sit amet. ", 100))),
 		Headers:    []byte("From: sender@example.com\r\nTo: recipient@example.com\r\nSubject: Test\r\n\r\n"),
-		RawMessage: []byte("Raw email message content that is quite long. " + strings.Repeat("Data data data. ", 100)),
+		RawMessage: []byte(fmt.Sprintf("Raw email message content that is quite long. %s", strings.Repeat("Data data data. ", 100))),
 		Synced:     time.Now().Truncate(time.Second),
 	}
 
@@ -327,4 +417,250 @@ func TestEmailCompressionRoundTrip(t *testing.T) {
 	assert.Equal(t, originalEmail.Body, retrievedEmail.Body)
 	assert.Equal(t, originalEmail.Headers, retrievedEmail.Headers)
 	assert.Equal(t, originalEmail.RawMessage, retrievedEmail.RawMessage)
+}
+
+func TestWithReadOnly(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	// Create a writable storage first to initialize the schema
+	s, err := New(dbPath, log)
+	require.NoError(t, err)
+	require.NoError(t, s.SaveMailboxState(&MailboxState{
+		Name:        "INBOX",
+		UIDValidity: 1,
+		LastUID:     1,
+		LastSync:    time.Now(),
+	}))
+	s.Close()
+
+	// Re-open in read-only mode
+	sRO, err := New(dbPath, log, WithReadOnly(true))
+	require.NoError(t, err)
+	defer sRO.Close()
+
+	mailboxes, err := sRO.ListMailboxes()
+	require.NoError(t, err)
+	assert.Contains(t, mailboxes, "INBOX")
+}
+
+func TestWithReadOnly_False(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "test.db")
+
+	// WithReadOnly(false) should have no effect (default is read-write)
+	s, err := New(dbPath, log, WithReadOnly(false))
+	require.NoError(t, err)
+	defer s.Close()
+
+	require.NoError(t, s.SaveMailboxState(&MailboxState{
+		Name:        "INBOX",
+		UIDValidity: 1,
+		LastUID:     1,
+		LastSync:    time.Now(),
+	}))
+}
+
+func TestNew_ReadOnlyNonExistent(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	_, err := New("/nonexistent_dir_xyz/test.db", log, WithReadOnly(true))
+	assert.Error(t, err)
+}
+
+func TestDecompressData_TruncatedGzip(t *testing.T) {
+	original := []byte("data to compress for truncation test")
+	compressed, err := compressData(original)
+	require.NoError(t, err)
+	require.Greater(t, len(compressed), 10)
+
+	// Truncate to just the gzip header — gzip.NewReader succeeds but io.ReadAll fails
+	truncated := compressed[:10]
+	_, err = decompressData(truncated)
+	assert.Error(t, err)
+}
+
+func TestSaveEmail_ClosedDB(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	s.Close()
+
+	err = s.SaveEmail(&Email{UID: 1, Mailbox: "INBOX"})
+	assert.Error(t, err)
+}
+
+func TestSaveEmail_ReadOnlyDB(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	s, err := New(dbPath, log)
+	require.NoError(t, err)
+	s.Close()
+
+	sRO, err := New(dbPath, log, WithReadOnly(true))
+	require.NoError(t, err)
+	defer sRO.Close()
+
+	err = sRO.SaveEmail(&Email{UID: 1, Mailbox: "INBOX", Subject: "test"})
+	assert.Error(t, err)
+}
+
+func TestSaveEmailBatch_ClosedDB(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	s.Close()
+
+	err = s.SaveEmailBatch([]*Email{{UID: 1, Mailbox: "INBOX"}})
+	assert.Error(t, err)
+}
+
+func TestSaveEmailBatch_NoTable(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer s.Close()
+
+	_, dropErr := s.db.Exec("DROP TABLE emails")
+	require.NoError(t, dropErr)
+
+	err = s.SaveEmailBatch([]*Email{{UID: 1, Mailbox: "INBOX"}})
+	assert.Error(t, err)
+}
+
+func TestSaveEmailBatch_ReadOnlyDB(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	s, err := New(dbPath, log)
+	require.NoError(t, err)
+	s.Close()
+
+	sRO, err := New(dbPath, log, WithReadOnly(true))
+	require.NoError(t, err)
+	defer sRO.Close()
+
+	err = sRO.SaveEmailBatch([]*Email{{UID: 1, Mailbox: "INBOX", Subject: "test"}})
+	assert.Error(t, err)
+}
+
+func TestGetEmail_ClosedDB(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	s.Close()
+
+	_, err = s.GetEmail("INBOX", 1)
+	assert.Error(t, err)
+}
+
+func TestGetEmail_CorruptedToAddrs(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer s.Close()
+
+	_, execErr := s.db.Exec(
+		`INSERT OR REPLACE INTO emails (mailbox, uid, subject, from_addr, to_addrs, date, size, flags, gmail_labels, synced)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"INBOX", 999, "Corrupted", "sender@example.com", "[invalid-json", 0, 0, "[]", "null", 0,
+	)
+	require.NoError(t, execErr)
+
+	_, err = s.GetEmail("INBOX", 999)
+	assert.Error(t, err)
+}
+
+func TestGetEmail_CorruptedFlags(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer s.Close()
+
+	_, execErr := s.db.Exec(
+		`INSERT OR REPLACE INTO emails (mailbox, uid, subject, from_addr, to_addrs, date, size, flags, gmail_labels, synced)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"INBOX", 998, "Corrupted Flags", "sender@example.com", "[]", 0, 0, "[invalid-flags", "null", 0,
+	)
+	require.NoError(t, execErr)
+
+	_, err = s.GetEmail("INBOX", 998)
+	assert.Error(t, err)
+}
+
+func TestGetEmail_CorruptedGmailLabels(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer s.Close()
+
+	_, execErr := s.db.Exec(
+		`INSERT OR REPLACE INTO emails (mailbox, uid, subject, from_addr, to_addrs, date, size, flags, gmail_labels, synced)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"INBOX", 997, "Corrupted Gmail Labels", "sender@example.com", "[]", 0, 0, "[]", "[invalid-labels", 0,
+	)
+	require.NoError(t, execErr)
+
+	_, err = s.GetEmail("INBOX", 997)
+	assert.Error(t, err)
+}
+
+func TestGetMailboxState_ClosedDB(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	s.Close()
+
+	_, err = s.GetMailboxState("INBOX")
+	assert.Error(t, err)
+}
+
+func TestListMailboxes_ClosedDB(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	s.Close()
+
+	_, err = s.ListMailboxes()
+	assert.Error(t, err)
+}
+
+func TestCountMessages_ClosedDB(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	s.Close()
+
+	_, err = s.CountMessages("INBOX")
+	assert.Error(t, err)
+}
+
+func TestListEmails_ClosedDB(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	s.Close()
+
+	_, err = s.ListEmails("INBOX", 10, 0)
+	assert.Error(t, err)
 }

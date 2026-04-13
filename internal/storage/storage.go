@@ -62,7 +62,7 @@ func New(path string, log *logrus.Logger, options ...Option) (*Storage, error) {
 
 	dsn := path
 	if s.readOnly {
-		dsn = "file:" + path + "?mode=ro"
+		dsn = fmt.Sprintf("file:%s?mode=ro", path)
 	}
 
 	db, err := sql.Open("sqlite", dsn)

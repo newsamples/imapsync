@@ -1,10 +1,13 @@
-package sync
+package syncer
 
 import (
+	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/emersion/go-imap/v2"
+	"github.com/newsamples/imapsync/internal/config"
 	imapClient "github.com/newsamples/imapsync/internal/imap"
 	"github.com/newsamples/imapsync/internal/storage"
 	"github.com/sirupsen/logrus"
@@ -107,7 +110,7 @@ func TestUpdateMailboxState(t *testing.T) {
 	log.SetLevel(logrus.PanicLevel)
 
 	tmpDir := t.TempDir()
-	dbPath := tmpDir + "/test.db"
+	dbPath := filepath.Join(tmpDir, "test.db")
 	store, err := storage.New(dbPath, log)
 	require.NoError(t, err)
 	defer store.Close()
@@ -167,4 +170,59 @@ func TestPrioritizeInbox(t *testing.T) {
 		result := prioritizeInbox(mailboxes)
 		assert.Equal(t, mailboxes, result)
 	})
+}
+
+func TestWithProgress(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s := &Syncer{log: log}
+	WithProgress(true)(s)
+	assert.True(t, s.showProgress)
+	WithProgress(false)(s)
+	assert.False(t, s.showProgress)
+}
+
+func TestWithGmailConfig_NonGmail(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	store, err := storage.New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer store.Close()
+
+	cfg := &config.GmailConfig{}
+	s := New(nil, store, log, WithGmailConfig(cfg, false))
+	assert.NotNil(t, s.gmailFilter)
+}
+
+func TestWatch_CancelledContext(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s := &Syncer{log: log}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := s.Watch(ctx, 0)
+	assert.NoError(t, err)
+}
+
+func TestNew_WithOptions(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	tmpDir := t.TempDir()
+	store, err := storage.New(filepath.Join(tmpDir, "test.db"), log)
+	require.NoError(t, err)
+	defer store.Close()
+
+	enabled := true
+	cfg := &config.GmailConfig{Enabled: &enabled}
+
+	s := New(nil, store, log,
+		WithProgress(true),
+		WithGmailConfig(cfg, false),
+	)
+	assert.True(t, s.showProgress)
+	assert.NotNil(t, s.gmailFilter)
 }
