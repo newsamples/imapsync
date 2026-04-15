@@ -20,6 +20,19 @@ type IMAPConfig struct {
 
 type StorageConfig struct {
 	Path string `yaml:"path" validate:"required"`
+
+	// PurgeAfterDays controls how long soft-deleted emails are kept before
+	// being permanently removed. 0 disables purging.
+	// Default: 90
+	PurgeAfterDays *int `yaml:"purge_after_days,omitempty"`
+}
+
+// PurgeAfterDaysOrDefault returns the configured purge window, defaulting to 90.
+func (s *StorageConfig) PurgeAfterDaysOrDefault() int {
+	if s.PurgeAfterDays == nil {
+		return 90
+	}
+	return *s.PurgeAfterDays
 }
 
 type GmailConfig struct {

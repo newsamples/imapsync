@@ -131,6 +131,7 @@ func RunSync(cmd *cobra.Command, _ []string) error {
 	s := syncer.New(client, store, Log,
 		syncer.WithProgress(showProgress),
 		syncer.WithGmailConfig(&cfg.Gmail, isGmail),
+		syncer.WithPurgeAfterDays(cfg.Storage.PurgeAfterDaysOrDefault()),
 	)
 
 	if watchMode {

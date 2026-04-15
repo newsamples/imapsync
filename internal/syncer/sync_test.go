@@ -226,3 +226,73 @@ func TestNew_WithOptions(t *testing.T) {
 	assert.True(t, s.showProgress)
 	assert.NotNil(t, s.gmailFilter)
 }
+
+func TestNew_DefaultPurgeAfterDays(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	store, err := storage.New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer store.Close()
+
+	s := New(nil, store, log)
+	assert.Equal(t, 90, s.purgeAfterDays)
+}
+
+func TestWithPurgeAfterDays(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	store, err := storage.New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer store.Close()
+
+	s := New(nil, store, log, WithPurgeAfterDays(30))
+	assert.Equal(t, 30, s.purgeAfterDays)
+}
+
+func TestPurgeOldDeleted_Disabled(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	store, err := storage.New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer store.Close()
+
+	require.NoError(t, store.SaveEmail(&storage.Email{UID: 1, Mailbox: "INBOX"}))
+	_, err = store.MarkDeleted("INBOX", []uint32{1}, time.Now().Add(-365*24*time.Hour))
+	require.NoError(t, err)
+
+	s := New(nil, store, log, WithPurgeAfterDays(0))
+	s.purgeOldDeleted()
+
+	// With purge disabled, MarkDeleted on the same UID should still find the row
+	// and return 0 affected (already deleted_at set) instead of error.
+	n, err := store.MarkDeleted("INBOX", []uint32{1}, time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "row should still exist with deleted_at set")
+}
+
+func TestPurgeOldDeleted_RemovesOldRows(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	store, err := storage.New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer store.Close()
+
+	require.NoError(t, store.SaveEmail(&storage.Email{UID: 1, Mailbox: "INBOX"}))
+	_, err = store.MarkDeleted("INBOX", []uint32{1}, time.Now().Add(-100*24*time.Hour))
+	require.NoError(t, err)
+
+	s := New(nil, store, log, WithPurgeAfterDays(90))
+	s.purgeOldDeleted()
+
+	// After purge, re-saving the UID and marking deleted should work fresh
+	// (old row is gone).
+	require.NoError(t, store.SaveEmail(&storage.Email{UID: 1, Mailbox: "INBOX", Subject: "new"}))
+	e, err := store.GetEmail("INBOX", 1)
+	require.NoError(t, err)
+	require.NotNil(t, e)
+	assert.Equal(t, "new", e.Subject)
+}

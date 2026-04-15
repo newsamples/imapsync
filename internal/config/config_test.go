@@ -184,3 +184,22 @@ func TestGmailConfig_ShouldFetchLabels(t *testing.T) {
 func boolPtr(b bool) *bool {
 	return &b
 }
+
+func TestPurgeAfterDaysOrDefault(t *testing.T) {
+	t.Run("defaults to 90 when unset", func(t *testing.T) {
+		s := StorageConfig{}
+		assert.Equal(t, 90, s.PurgeAfterDaysOrDefault())
+	})
+
+	t.Run("returns configured value", func(t *testing.T) {
+		v := 30
+		s := StorageConfig{PurgeAfterDays: &v}
+		assert.Equal(t, 30, s.PurgeAfterDaysOrDefault())
+	})
+
+	t.Run("zero disables purge", func(t *testing.T) {
+		v := 0
+		s := StorageConfig{PurgeAfterDays: &v}
+		assert.Equal(t, 0, s.PurgeAfterDaysOrDefault())
+	})
+}

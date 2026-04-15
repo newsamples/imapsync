@@ -632,6 +632,289 @@ func TestGetMailboxState_ClosedDB(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestMarkDeleted_SoftDeletesAndHides(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer s.Close()
+
+	require.NoError(t, s.SaveEmail(&Email{UID: 1, Mailbox: "INBOX", Subject: "one"}))
+	require.NoError(t, s.SaveEmail(&Email{UID: 2, Mailbox: "INBOX", Subject: "two"}))
+	require.NoError(t, s.SaveEmail(&Email{UID: 3, Mailbox: "INBOX", Subject: "three"}))
+
+	n, err := s.MarkDeleted("INBOX", []uint32{2}, time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	count, err := s.CountMessages("INBOX")
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
+
+	e, err := s.GetEmail("INBOX", 2)
+	require.NoError(t, err)
+	assert.Nil(t, e, "soft-deleted email should not be returned by GetEmail")
+
+	live, err := s.ListLiveUIDs("INBOX")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []uint32{1, 3}, live)
+
+	emails, err := s.ListEmails("INBOX", 10, 0)
+	require.NoError(t, err)
+	assert.Len(t, emails, 2)
+}
+
+func TestMarkDeleted_EmptyUIDs(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer s.Close()
+
+	n, err := s.MarkDeleted("INBOX", nil, time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+}
+
+func TestMarkDeleted_PreservesOriginalTimestamp(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer s.Close()
+
+	require.NoError(t, s.SaveEmail(&Email{UID: 1, Mailbox: "INBOX"}))
+
+	first := time.Unix(1000, 0)
+	n, err := s.MarkDeleted("INBOX", []uint32{1}, first)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	// Second call should not re-mark a row that's already deleted.
+	n, err = s.MarkDeleted("INBOX", []uint32{1}, time.Unix(2000, 0))
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+}
+
+func TestSaveEmail_ResurrectsSoftDeleted(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer s.Close()
+
+	require.NoError(t, s.SaveEmail(&Email{UID: 1, Mailbox: "INBOX", Subject: "orig"}))
+	_, err = s.MarkDeleted("INBOX", []uint32{1}, time.Now())
+	require.NoError(t, err)
+
+	// Resaving the same UID should clear the soft-delete state.
+	require.NoError(t, s.SaveEmail(&Email{UID: 1, Mailbox: "INBOX", Subject: "resurrected"}))
+
+	e, err := s.GetEmail("INBOX", 1)
+	require.NoError(t, err)
+	require.NotNil(t, e)
+	assert.Equal(t, "resurrected", e.Subject)
+}
+
+func TestListLiveUIDs_ClosedDB(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	s.Close()
+
+	_, err = s.ListLiveUIDs("INBOX")
+	assert.Error(t, err)
+}
+
+func TestMigrateAddDeletedAt_AddsMissingColumn(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	// Open fresh, drop the column to simulate a pre-migration database.
+	s, err := New(dbPath, log)
+	require.NoError(t, err)
+	_, err = s.db.Exec(`DROP INDEX IF EXISTS idx_emails_deleted_at`)
+	require.NoError(t, err)
+	_, err = s.db.Exec(`ALTER TABLE emails DROP COLUMN deleted_at`)
+	require.NoError(t, err)
+	s.Close()
+
+	// Reopen — migration should re-add the column.
+	s2, err := New(dbPath, log)
+	require.NoError(t, err)
+	defer s2.Close()
+
+	require.NoError(t, s2.SaveEmail(&Email{UID: 1, Mailbox: "INBOX"}))
+	n, err := s2.MarkDeleted("INBOX", []uint32{1}, time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+}
+
+func TestMarkDeleted_ClosedDB(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	s.Close()
+
+	_, err = s.MarkDeleted("INBOX", []uint32{1}, time.Now())
+	assert.Error(t, err)
+}
+
+func TestMarkDeleted_NoMatchingRows(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer s.Close()
+
+	// MarkDeleted on UIDs that don't exist yields zero affected rows, no error.
+	n, err := s.MarkDeleted("INBOX", []uint32{42, 43}, time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+}
+
+func TestPurgeDeletedBefore_RemovesOldSoftDeleted(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer s.Close()
+
+	require.NoError(t, s.SaveEmail(&Email{UID: 1, Mailbox: "INBOX", Subject: "old deleted", RawMessage: []byte("raw1")}))
+	require.NoError(t, s.SaveEmail(&Email{UID: 2, Mailbox: "INBOX", Subject: "recent deleted"}))
+	require.NoError(t, s.SaveEmail(&Email{UID: 3, Mailbox: "INBOX", Subject: "live"}))
+
+	oldTime := time.Now().Add(-100 * 24 * time.Hour)
+	recentTime := time.Now().Add(-10 * 24 * time.Hour)
+	_, err = s.MarkDeleted("INBOX", []uint32{1}, oldTime)
+	require.NoError(t, err)
+	_, err = s.MarkDeleted("INBOX", []uint32{2}, recentTime)
+	require.NoError(t, err)
+
+	cutoff := time.Now().Add(-90 * 24 * time.Hour)
+	n, err := s.PurgeDeletedBefore(cutoff)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+
+	var count int
+	require.NoError(t, s.db.QueryRow(`SELECT COUNT(*) FROM emails WHERE mailbox = ? AND uid = ?`, "INBOX", 1).Scan(&count))
+	assert.Equal(t, 0, count, "UID 1 should be purged from emails")
+	require.NoError(t, s.db.QueryRow(`SELECT COUNT(*) FROM email_content WHERE mailbox = ? AND uid = ?`, "INBOX", 1).Scan(&count))
+	assert.Equal(t, 0, count, "UID 1 should be purged from email_content")
+
+	live, err := s.ListLiveUIDs("INBOX")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []uint32{3}, live)
+}
+
+func TestPurgeDeletedBefore_NothingToDelete(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer s.Close()
+
+	n, err := s.PurgeDeletedBefore(time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+}
+
+func TestPurgeDeletedBefore_ClosedDB(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	s.Close()
+
+	_, err = s.PurgeDeletedBefore(time.Now())
+	assert.Error(t, err)
+}
+
+func TestPurgeDeletedBefore_MissingContentTable(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer s.Close()
+
+	_, err = s.db.Exec(`DROP TABLE email_content`)
+	require.NoError(t, err)
+
+	_, err = s.PurgeDeletedBefore(time.Now())
+	assert.Error(t, err)
+}
+
+func TestPurgeDeletedBefore_MissingEmailsTable(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer s.Close()
+
+	_, err = s.db.Exec(`DROP TABLE emails`)
+	require.NoError(t, err)
+
+	_, err = s.PurgeDeletedBefore(time.Now())
+	assert.Error(t, err)
+}
+
+func TestMarkDeleted_ReadOnlyDB(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	s, err := New(dbPath, log)
+	require.NoError(t, err)
+	require.NoError(t, s.SaveEmail(&Email{UID: 1, Mailbox: "INBOX"}))
+	s.Close()
+
+	sRO, err := New(dbPath, log, WithReadOnly(true))
+	require.NoError(t, err)
+	defer sRO.Close()
+
+	_, err = sRO.MarkDeleted("INBOX", []uint32{1}, time.Now())
+	assert.Error(t, err)
+}
+
+func TestMarkDeleted_NoTable(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+	s, err := New(filepath.Join(t.TempDir(), "test.db"), log)
+	require.NoError(t, err)
+	defer s.Close()
+
+	_, err = s.db.Exec("DROP TABLE emails")
+	require.NoError(t, err)
+
+	_, err = s.MarkDeleted("INBOX", []uint32{1}, time.Now())
+	assert.Error(t, err)
+}
+
+func TestMigrateAddDeletedAt_Idempotent(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.PanicLevel)
+
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	s, err := New(dbPath, log)
+	require.NoError(t, err)
+	s.Close()
+
+	// Reopen — column already exists, migration should be a no-op.
+	s2, err := New(dbPath, log)
+	require.NoError(t, err)
+	s2.Close()
+}
+
 func TestListMailboxes_ClosedDB(t *testing.T) {
 	log := logrus.New()
 	log.SetLevel(logrus.PanicLevel)

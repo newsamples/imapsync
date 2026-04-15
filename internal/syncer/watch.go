@@ -97,8 +97,8 @@ func (s *Syncer) watchWithIdle(ctx context.Context) error {
 					return nil
 				}
 				s.log.WithError(err).Error("Watch: failed to sync INBOX")
-			} else if stats.NewMessages > 0 {
-				s.log.Infof("Watch: INBOX synced %d new message(s)", stats.NewMessages)
+			} else if stats.NewMessages > 0 || stats.DeletedMessages > 0 {
+				s.log.Infof("Watch: INBOX %d new, %d deleted", stats.NewMessages, stats.DeletedMessages)
 			}
 		}
 
@@ -134,8 +134,8 @@ func (s *Syncer) pollOtherMailboxes(ctx context.Context) {
 			s.log.WithError(err).Warnf("Watch: failed to poll %s", mailbox)
 			continue
 		}
-		if stats.NewMessages > 0 {
-			s.log.Infof("Watch: %s synced %d new message(s)", mailbox, stats.NewMessages)
+		if stats.NewMessages > 0 || stats.DeletedMessages > 0 {
+			s.log.Infof("Watch: %s %d new, %d deleted", mailbox, stats.NewMessages, stats.DeletedMessages)
 		}
 	}
 }

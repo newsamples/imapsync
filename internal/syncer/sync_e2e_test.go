@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	imap2 "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/emersion/go-imap/v2/imapserver/imapmemserver"
@@ -166,6 +167,83 @@ func TestSyncMailbox_WithMessages(t *testing.T) {
 	count, err := store.CountMessages("INBOX")
 	require.NoError(t, err)
 	assert.Equal(t, 4, count)
+}
+
+// deleteSyncMsg marks the given UID with \Deleted and expunges in the given mailbox.
+func deleteSyncMsg(t *testing.T, opts imapClient.ConnectOptions, mailbox string, uid uint32) {
+	t.Helper()
+	addr := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	c, err := imapclient.DialInsecure(addr, nil)
+	require.NoError(t, err)
+	defer func() { c.Logout().Wait() }() //nolint:errcheck
+	require.NoError(t, c.Login(opts.Username, opts.Password).Wait())
+	_, err = c.Select(mailbox, nil).Wait()
+	require.NoError(t, err)
+
+	uidSet := imap2.UIDSetNum(imap2.UID(uid))
+	storeCmd := c.Store(uidSet, &imap2.StoreFlags{
+		Op:     imap2.StoreFlagsAdd,
+		Flags:  []imap2.Flag{imap2.FlagDeleted},
+		Silent: true,
+	}, nil)
+	require.NoError(t, storeCmd.Close())
+	require.NoError(t, c.Expunge().Close())
+}
+
+func TestSyncMailbox_ReconcilesDeletedMessages(t *testing.T) {
+	opts, cleanup := newSyncTestServer(t)
+	defer cleanup()
+
+	appendSyncMsgs(t, opts, "INBOX", 3)
+
+	s, store := newTestSyncer(t, opts)
+	_, err := s.SyncMailbox(context.Background(), "INBOX")
+	require.NoError(t, err)
+
+	count, err := store.CountMessages("INBOX")
+	require.NoError(t, err)
+	assert.Equal(t, 3, count)
+
+	// Delete UID 2 on the server.
+	deleteSyncMsg(t, opts, "INBOX", 2)
+
+	stats, err := s.SyncMailbox(context.Background(), "INBOX")
+	require.NoError(t, err)
+	assert.Equal(t, 0, stats.NewMessages)
+	assert.Equal(t, 1, stats.DeletedMessages)
+
+	// Local count drops to 2 (soft-deleted hidden).
+	count, err = store.CountMessages("INBOX")
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
+
+	// Non-deleted UIDs still returned.
+	live, err := store.ListLiveUIDs("INBOX")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []uint32{1, 3}, live)
+}
+
+func TestSyncMailbox_ReconcilesEmptyMailbox(t *testing.T) {
+	opts, cleanup := newSyncTestServer(t)
+	defer cleanup()
+
+	appendSyncMsgs(t, opts, "INBOX", 2)
+
+	s, store := newTestSyncer(t, opts)
+	_, err := s.SyncMailbox(context.Background(), "INBOX")
+	require.NoError(t, err)
+
+	// Delete everything on the server.
+	deleteSyncMsg(t, opts, "INBOX", 1)
+	deleteSyncMsg(t, opts, "INBOX", 2)
+
+	stats, err := s.SyncMailbox(context.Background(), "INBOX")
+	require.NoError(t, err)
+	assert.Equal(t, 2, stats.DeletedMessages)
+
+	count, err := store.CountMessages("INBOX")
+	require.NoError(t, err)
+	assert.Equal(t, 0, count)
 }
 
 func TestSyncMailbox_NothingNew(t *testing.T) {

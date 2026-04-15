@@ -21,19 +21,20 @@ type Storage struct {
 }
 
 type Email struct {
-	UID         uint32    `json:"uid"`
-	Mailbox     string    `json:"mailbox"`
-	Subject     string    `json:"subject"`
-	From        string    `json:"from"`
-	To          []string  `json:"to"`
-	Date        time.Time `json:"date"`
-	Size        uint32    `json:"size"`
-	Flags       []string  `json:"flags"`
-	GmailLabels []string  `json:"gmail_labels,omitempty"` // Gmail labels from X-GM-LABELS
-	Body        []byte    `json:"body"`
-	Headers     []byte    `json:"headers"`
-	RawMessage  []byte    `json:"raw_message"`
-	Synced      time.Time `json:"synced"`
+	UID         uint32     `json:"uid"`
+	Mailbox     string     `json:"mailbox"`
+	Subject     string     `json:"subject"`
+	From        string     `json:"from"`
+	To          []string   `json:"to"`
+	Date        time.Time  `json:"date"`
+	Size        uint32     `json:"size"`
+	Flags       []string   `json:"flags"`
+	GmailLabels []string   `json:"gmail_labels,omitempty"` // Gmail labels from X-GM-LABELS
+	Body        []byte     `json:"body"`
+	Headers     []byte     `json:"headers"`
+	RawMessage  []byte     `json:"raw_message"`
+	Synced      time.Time  `json:"synced"`
+	DeletedAt   *time.Time `json:"deleted_at,omitempty"`
 }
 
 type MailboxState struct {
@@ -102,6 +103,7 @@ func (s *Storage) initSchema() error {
 		flags TEXT,
 		gmail_labels TEXT,
 		synced INTEGER,
+		deleted_at INTEGER,
 		PRIMARY KEY (mailbox, uid)
 	);
 
@@ -126,8 +128,30 @@ func (s *Storage) initSchema() error {
 	);
 	`
 
-	_, err := s.db.Exec(schema)
-	return err
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+
+	return s.migrateAddDeletedAt()
+}
+
+// migrateAddDeletedAt adds the deleted_at column to older DBs that predate it,
+// then ensures the supporting index exists.
+func (s *Storage) migrateAddDeletedAt() error {
+	var hasCol int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('emails') WHERE name = 'deleted_at'`).Scan(&hasCol)
+	if err != nil {
+		return fmt.Errorf("failed to check deleted_at column: %w", err)
+	}
+	if hasCol == 0 {
+		if _, err := s.db.Exec(`ALTER TABLE emails ADD COLUMN deleted_at INTEGER`); err != nil {
+			return fmt.Errorf("failed to add deleted_at column: %w", err)
+		}
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_emails_deleted_at ON emails(deleted_at)`); err != nil {
+		return fmt.Errorf("failed to create deleted_at index: %w", err)
+	}
+	return nil
 }
 
 func (s *Storage) Close() error {
@@ -363,16 +387,17 @@ func (s *Storage) SaveEmailBatch(emails []*Email) error {
 
 func (s *Storage) GetEmail(mailbox string, uid uint32) (*Email, error) {
 	query := `
-		SELECT e.mailbox, e.uid, e.subject, e.from_addr, e.to_addrs, e.date, e.size, e.flags, e.gmail_labels, e.synced,
+		SELECT e.mailbox, e.uid, e.subject, e.from_addr, e.to_addrs, e.date, e.size, e.flags, e.gmail_labels, e.synced, e.deleted_at,
 			   c.body, c.headers, c.raw_message
 		FROM emails e
 		LEFT JOIN email_content c ON e.mailbox = c.mailbox AND e.uid = c.uid
-		WHERE e.mailbox = ? AND e.uid = ?
+		WHERE e.mailbox = ? AND e.uid = ? AND e.deleted_at IS NULL
 	`
 
 	var email Email
 	var toJSON, flagsJSON, gmailLabelsJSON string
 	var dateUnix, syncedUnix int64
+	var deletedAtUnix sql.NullInt64
 	var compressedBody, compressedHeaders, compressedRawMessage []byte
 
 	err := s.db.QueryRow(query, mailbox, uid).Scan(
@@ -386,6 +411,7 @@ func (s *Storage) GetEmail(mailbox string, uid uint32) (*Email, error) {
 		&flagsJSON,
 		&gmailLabelsJSON,
 		&syncedUnix,
+		&deletedAtUnix,
 		&compressedBody,
 		&compressedHeaders,
 		&compressedRawMessage,
@@ -430,6 +456,10 @@ func (s *Storage) GetEmail(mailbox string, uid uint32) (*Email, error) {
 
 	email.Date = time.Unix(dateUnix, 0)
 	email.Synced = time.Unix(syncedUnix, 0)
+	if deletedAtUnix.Valid {
+		t := time.Unix(deletedAtUnix.Int64, 0)
+		email.DeletedAt = &t
+	}
 
 	return &email, nil
 }
@@ -507,7 +537,7 @@ func (s *Storage) ListMailboxes() ([]string, error) {
 }
 
 func (s *Storage) CountMessages(mailbox string) (int, error) {
-	query := `SELECT COUNT(*) FROM emails WHERE mailbox = ?`
+	query := `SELECT COUNT(*) FROM emails WHERE mailbox = ? AND deleted_at IS NULL`
 
 	var count int
 	err := s.db.QueryRow(query, mailbox).Scan(&count)
@@ -522,7 +552,7 @@ func (s *Storage) ListEmails(mailbox string, limit, offset int) ([]*Email, error
 	query := `
 		SELECT mailbox, uid, subject, from_addr, to_addrs, date, size, flags, gmail_labels, synced
 		FROM emails
-		WHERE mailbox = ?
+		WHERE mailbox = ? AND deleted_at IS NULL
 		ORDER BY uid DESC
 		LIMIT ? OFFSET ?
 	`
@@ -580,4 +610,111 @@ func (s *Storage) ListEmails(mailbox string, limit, offset int) ([]*Email, error
 	}
 
 	return emails, nil
+}
+
+// ListLiveUIDs returns UIDs for a mailbox that are not soft-deleted.
+func (s *Storage) ListLiveUIDs(mailbox string) ([]uint32, error) {
+	rows, err := s.db.Query(
+		`SELECT uid FROM emails WHERE mailbox = ? AND deleted_at IS NULL`,
+		mailbox,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query live uids: %w", err)
+	}
+	defer rows.Close()
+
+	var uids []uint32
+	for rows.Next() {
+		var uid uint32
+		if err := rows.Scan(&uid); err != nil {
+			return nil, fmt.Errorf("failed to scan uid: %w", err)
+		}
+		uids = append(uids, uid)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating uids: %w", err)
+	}
+	return uids, nil
+}
+
+// PurgeDeletedBefore permanently removes soft-deleted emails whose deleted_at
+// is older than the cutoff, from both the emails and email_content tables.
+func (s *Storage) PurgeDeletedBefore(cutoff time.Time) (int, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
+	cutoffUnix := cutoff.Unix()
+
+	if _, err := tx.Exec(
+		`DELETE FROM email_content
+		 WHERE (mailbox, uid) IN (
+			SELECT mailbox, uid FROM emails
+			WHERE deleted_at IS NOT NULL AND deleted_at < ?
+		 )`,
+		cutoffUnix,
+	); err != nil {
+		tx.Rollback()
+		return 0, fmt.Errorf("failed to purge email_content: %w", err)
+	}
+
+	res, err := tx.Exec(
+		`DELETE FROM emails WHERE deleted_at IS NOT NULL AND deleted_at < ?`,
+		cutoffUnix,
+	)
+	if err != nil {
+		tx.Rollback()
+		return 0, fmt.Errorf("failed to purge emails: %w", err)
+	}
+
+	n, err := res.RowsAffected()
+	if err != nil {
+		tx.Rollback()
+		return 0, fmt.Errorf("failed to read rows affected: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("failed to commit: %w", err)
+	}
+	return int(n), nil
+}
+
+// MarkDeleted soft-deletes the given UIDs in a mailbox, preserving any
+// existing deleted_at timestamp so the original deletion time isn't overwritten.
+func (s *Storage) MarkDeleted(mailbox string, uids []uint32, deletedAt time.Time) (int, error) {
+	if len(uids) == 0 {
+		return 0, nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
+	stmt, err := tx.Prepare(
+		`UPDATE emails SET deleted_at = ? WHERE mailbox = ? AND uid = ? AND deleted_at IS NULL`,
+	)
+	if err != nil {
+		tx.Rollback()
+		return 0, fmt.Errorf("failed to prepare statement: %w", err)
+	}
+	defer stmt.Close()
+
+	ts := deletedAt.Unix()
+	var total int64
+	for _, uid := range uids {
+		res, err := stmt.Exec(ts, mailbox, uid)
+		if err != nil {
+			tx.Rollback()
+			return 0, fmt.Errorf("failed to mark deleted: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		total += n
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("failed to commit: %w", err)
+	}
+	return int(total), nil
 }

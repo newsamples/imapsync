@@ -14,11 +14,12 @@ import (
 )
 
 type Syncer struct {
-	client       *imap.Client
-	storage      *storage.Storage
-	log          *logrus.Logger
-	showProgress bool
-	gmailFilter  *GmailFilter
+	client         *imap.Client
+	storage        *storage.Storage
+	log            *logrus.Logger
+	showProgress   bool
+	gmailFilter    *GmailFilter
+	purgeAfterDays int
 }
 
 type Option func(*Syncer)
@@ -39,13 +40,22 @@ func WithGmailConfig(cfg *config.GmailConfig, isGmail bool) Option {
 	}
 }
 
+// WithPurgeAfterDays sets how many days a soft-deleted email is kept before
+// being permanently removed. 0 disables purging.
+func WithPurgeAfterDays(days int) Option {
+	return func(s *Syncer) {
+		s.purgeAfterDays = days
+	}
+}
+
 func New(client *imap.Client, store *storage.Storage, log *logrus.Logger, opts ...Option) *Syncer {
 	s := &Syncer{
-		client:       client,
-		storage:      store,
-		log:          log,
-		showProgress: false,
-		gmailFilter:  nil, // Will be set when Gmail config is provided
+		client:         client,
+		storage:        store,
+		log:            log,
+		showProgress:   false,
+		gmailFilter:    nil, // Will be set when Gmail config is provided
+		purgeAfterDays: 90,
 	}
 
 	for _, opt := range opts {
@@ -56,11 +66,14 @@ func New(client *imap.Client, store *storage.Storage, log *logrus.Logger, opts .
 }
 
 type Stats struct {
-	TotalMessages int
-	NewMessages   int
+	TotalMessages   int
+	NewMessages     int
+	DeletedMessages int
 }
 
 func (s *Syncer) SyncAll(ctx context.Context) error {
+	s.purgeOldDeleted()
+
 	mailboxes, err := s.client.ListMailboxesWithContext(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to list mailboxes: %w", err)
@@ -106,14 +119,15 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 		processedMailboxes++
 		totalStats.TotalMessages += stats.TotalMessages
 		totalStats.NewMessages += stats.NewMessages
+		totalStats.DeletedMessages += stats.DeletedMessages
 
 		if !s.showProgress {
 			s.log.Infof("Completed sync for mailbox: %s", mailbox)
 		}
 	}
 
-	s.log.Infof("Sync completed: %d mailboxes processed, %d messages total, %d new messages synced",
-		processedMailboxes, totalStats.TotalMessages, totalStats.NewMessages)
+	s.log.Infof("Sync completed: %d mailboxes processed, %d messages total, %d new synced, %d deleted",
+		processedMailboxes, totalStats.TotalMessages, totalStats.NewMessages, totalStats.DeletedMessages)
 
 	return nil
 }
@@ -140,8 +154,13 @@ func (s *Syncer) SyncMailbox(ctx context.Context, mailbox string) (*Stats, error
 	}
 
 	if selectData.NumMessages == 0 {
-		s.log.Infof("Mailbox %s: 0 messages total, 0 new messages (empty)", mailbox)
-		return &Stats{TotalMessages: 0, NewMessages: 0}, s.updateMailboxState(mailbox, selectData.UIDValidity, 0)
+		deleted, rerr := s.reconcileDeleted(mailbox, nil)
+		if rerr != nil {
+			s.log.WithError(rerr).Warnf("Reconcile deleted failed for %s", mailbox)
+		}
+		s.log.Infof("Mailbox %s: 0 messages total, 0 new, %d deleted (empty)", mailbox, deleted)
+		return &Stats{TotalMessages: 0, NewMessages: 0, DeletedMessages: deleted},
+			s.updateMailboxState(mailbox, selectData.UIDValidity, 0)
 	}
 
 	uids, err := s.client.SearchAllWithContext(ctx)
@@ -150,15 +169,24 @@ func (s *Syncer) SyncMailbox(ctx context.Context, mailbox string) (*Stats, error
 	}
 
 	if len(uids) == 0 {
-		s.log.Infof("Mailbox %s: 0 messages total, 0 new messages (empty)", mailbox)
-		return &Stats{TotalMessages: 0, NewMessages: 0}, s.updateMailboxState(mailbox, selectData.UIDValidity, 0)
+		deleted, rerr := s.reconcileDeleted(mailbox, nil)
+		if rerr != nil {
+			s.log.WithError(rerr).Warnf("Reconcile deleted failed for %s", mailbox)
+		}
+		s.log.Infof("Mailbox %s: 0 messages total, 0 new, %d deleted (empty)", mailbox, deleted)
+		return &Stats{TotalMessages: 0, NewMessages: 0, DeletedMessages: deleted},
+			s.updateMailboxState(mailbox, selectData.UIDValidity, 0)
 	}
 
 	uidsToSync := s.filterUIDs(uids, startUID)
 
 	if len(uidsToSync) == 0 {
-		s.log.Infof("Mailbox %s: %d messages total, 0 new messages", mailbox, len(uids))
-		return &Stats{TotalMessages: len(uids), NewMessages: 0}, nil
+		deleted, rerr := s.reconcileDeleted(mailbox, uids)
+		if rerr != nil {
+			s.log.WithError(rerr).Warnf("Reconcile deleted failed for %s", mailbox)
+		}
+		s.log.Infof("Mailbox %s: %d messages total, 0 new, %d deleted", mailbox, len(uids), deleted)
+		return &Stats{TotalMessages: len(uids), NewMessages: 0, DeletedMessages: deleted}, nil
 	}
 
 	var bar *progressbar.ProgressBar
@@ -217,11 +245,65 @@ func (s *Syncer) SyncMailbox(ctx context.Context, mailbox string) (*Stats, error
 		fmt.Println()
 	}
 
-	s.log.Infof("Mailbox %s: %d messages total, %d new messages synced", mailbox, len(uids), len(uidsToSync))
+	deleted, rerr := s.reconcileDeleted(mailbox, uids)
+	if rerr != nil {
+		s.log.WithError(rerr).Warnf("Reconcile deleted failed for %s", mailbox)
+	}
+
+	s.log.Infof("Mailbox %s: %d messages total, %d new messages synced, %d deleted",
+		mailbox, len(uids), len(uidsToSync), deleted)
 
 	maxUID := uidsToSync[len(uidsToSync)-1]
 	err = s.updateMailboxState(mailbox, selectData.UIDValidity, maxUID)
-	return &Stats{TotalMessages: len(uids), NewMessages: len(uidsToSync)}, err
+	return &Stats{TotalMessages: len(uids), NewMessages: len(uidsToSync), DeletedMessages: deleted}, err
+}
+
+// purgeOldDeleted removes soft-deleted emails whose deleted_at is older than
+// the configured retention window. Errors are logged but not returned — an
+// occasional purge failure should not block an otherwise-healthy sync.
+func (s *Syncer) purgeOldDeleted() {
+	if s.purgeAfterDays <= 0 {
+		return
+	}
+	cutoff := time.Now().AddDate(0, 0, -s.purgeAfterDays)
+	n, err := s.storage.PurgeDeletedBefore(cutoff)
+	if err != nil {
+		s.log.WithError(err).Warn("Failed to purge soft-deleted emails")
+		return
+	}
+	if n > 0 {
+		s.log.Infof("Purged %d soft-deleted email(s) older than %d days", n, s.purgeAfterDays)
+	}
+}
+
+// reconcileDeleted soft-deletes local emails whose UIDs are no longer present
+// on the server. The serverUIDs slice is the authoritative list for the mailbox;
+// pass nil or empty to mark everything local as deleted.
+func (s *Syncer) reconcileDeleted(mailbox string, serverUIDs []uint32) (int, error) {
+	liveUIDs, err := s.storage.ListLiveUIDs(mailbox)
+	if err != nil {
+		return 0, fmt.Errorf("failed to list live uids: %w", err)
+	}
+	if len(liveUIDs) == 0 {
+		return 0, nil
+	}
+
+	serverSet := make(map[uint32]struct{}, len(serverUIDs))
+	for _, uid := range serverUIDs {
+		serverSet[uid] = struct{}{}
+	}
+
+	var toDelete []uint32
+	for _, uid := range liveUIDs {
+		if _, ok := serverSet[uid]; !ok {
+			toDelete = append(toDelete, uid)
+		}
+	}
+	if len(toDelete) == 0 {
+		return 0, nil
+	}
+
+	return s.storage.MarkDeleted(mailbox, toDelete, time.Now())
 }
 
 func (s *Syncer) syncBatch(ctx context.Context, mailbox string, uids []uint32, bar *progressbar.ProgressBar) error {
