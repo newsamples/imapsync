@@ -302,8 +302,8 @@ func (c *Client) FetchMessagesWithContext(ctx context.Context, numSet imap.NumSe
 			Flags:    true,
 			Envelope: true,
 			BodySection: []*imap.FetchItemBodySection{
-				{Specifier: imap.PartSpecifierHeader},
-				{},
+				{Specifier: imap.PartSpecifierHeader, Peek: true},
+				{Peek: true},
 			},
 			RFC822Size: true,
 			UID:        true,

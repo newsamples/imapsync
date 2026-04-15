@@ -109,6 +109,103 @@ func TestWatchWithInterval_TickerFires(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestWatch_WithInterval_CompletesInitialSync(t *testing.T) {
+	opts, cleanup := newSyncTestServer(t)
+	defer cleanup()
+
+	s, _ := newTestSyncer(t, opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	err := s.Watch(ctx, time.Hour)
+	assert.NoError(t, err)
+}
+
+func TestWatch_WithIdle_CompletesInitialSync(t *testing.T) {
+	opts, cleanup := newSyncTestServer(t)
+	defer cleanup()
+
+	s, _ := newTestSyncer(t, opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	err := s.Watch(ctx, 0)
+	assert.NoError(t, err)
+}
+
+func TestWatchWithIdle_CancelsDuringIdle(t *testing.T) {
+	opts, cleanup := newSyncTestServer(t)
+	defer cleanup()
+
+	s, _ := newTestSyncer(t, opts)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	err := s.watchWithIdle(ctx)
+	assert.NoError(t, err)
+}
+
+func TestWatchWithIdle_PollsOtherMailboxesAfterIdleTimeout(t *testing.T) {
+	opts, cleanup := newSyncTestServer(t)
+	defer cleanup()
+
+	appendSyncMsgs(t, opts, "Sent", 2)
+
+	s, store := newTestSyncer(t, opts)
+
+	origIdle := idleTimeout
+	origPoll := defaultPollOther
+	idleTimeout = 100 * time.Millisecond
+	defaultPollOther = 50 * time.Millisecond
+	t.Cleanup(func() {
+		idleTimeout = origIdle
+		defaultPollOther = origPoll
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	err := s.watchWithIdle(ctx)
+	assert.NoError(t, err)
+
+	sentCount, err := store.CountMessages("Sent")
+	require.NoError(t, err)
+	assert.Equal(t, 2, sentCount)
+}
+
+func TestPollOtherMailboxes_SyncsNonInboxFolders(t *testing.T) {
+	opts, cleanup := newSyncTestServer(t)
+	defer cleanup()
+
+	appendSyncMsgs(t, opts, "Sent", 2)
+
+	s, store := newTestSyncer(t, opts)
+	s.pollOtherMailboxes(context.Background())
+
+	sentCount, err := store.CountMessages("Sent")
+	require.NoError(t, err)
+	assert.Equal(t, 2, sentCount)
+
+	inboxCount, err := store.CountMessages("INBOX")
+	require.NoError(t, err)
+	assert.Equal(t, 0, inboxCount)
+}
+
+func TestPollOtherMailboxes_ContextCancelled(t *testing.T) {
+	opts, cleanup := newSyncTestServer(t)
+	defer cleanup()
+
+	s, _ := newTestSyncer(t, opts)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	s.pollOtherMailboxes(ctx)
+}
+
 func BenchmarkWatchWithInterval_ContextCancelled(b *testing.B) {
 	log := logrus.New()
 	log.SetLevel(logrus.PanicLevel)
