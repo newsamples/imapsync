@@ -43,7 +43,7 @@ func init() {
 	RootCmd.PersistentFlags().StringVarP(&CfgFile, "config", "c", "config.yaml", "config file path")
 	RootCmd.PersistentFlags().Bool("verbose", false, "enable verbose logging")
 
-	syncCmd.Flags().Bool("progress", true, "show progress bars")
+	syncCmd.Flags().Bool("progress", false, "show progress bars")
 	syncCmd.Flags().Bool("watch", false, "watch for changes and sync continuously")
 	syncCmd.Flags().Duration("interval", 0, "polling interval for watch mode; 0 uses IMAP IDLE (real-time)")
 
