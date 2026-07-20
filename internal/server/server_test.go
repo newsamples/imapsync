@@ -581,5 +581,11 @@ func TestServeUI(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Header().Get("Content-Type"), "text/html")
-	assert.Contains(t, w.Body.String(), "Email Browser")
+
+	body := w.Body.String()
+	assert.Contains(t, body, "Email Browser")
+	// The {BT} sentinel must be fully replaced with real backticks so the
+	// embedded JavaScript template literals are valid.
+	assert.NotContains(t, body, "{BT}")
+	assert.Contains(t, body, "`).join('')")
 }

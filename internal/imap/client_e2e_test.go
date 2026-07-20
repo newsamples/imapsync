@@ -150,7 +150,7 @@ func TestReconnect_Success(t *testing.T) {
 	require.NoError(t, err)
 	defer c.Close()
 
-	// Server is still running — reconnect should succeed.
+	// Server is still running - reconnect should succeed.
 	require.NoError(t, c.reconnect(context.Background()))
 
 	mailboxes, err := c.ListMailboxes()
@@ -216,6 +216,83 @@ func TestWithRetry_Reconnects(t *testing.T) {
 	mailboxes, err := c.ListMailboxesWithContext(context.Background())
 	require.NoError(t, err)
 	assert.NotEmpty(t, mailboxes)
+}
+
+func TestReconnect_RestoresSelectedMailbox(t *testing.T) {
+	opts, cleanup := newTestIMAPServer(t)
+	defer cleanup()
+
+	c, err := Connect(opts)
+	require.NoError(t, err)
+	defer c.Close()
+
+	_, err = c.SelectMailboxWithContext(context.Background(), "INBOX")
+	require.NoError(t, err)
+
+	require.NoError(t, c.reconnect(context.Background()))
+
+	// After reconnect the connection must be back in the selected state with
+	// INBOX active, otherwise subsequent UID commands are rejected.
+	assert.Equal(t, imap2.ConnStateSelected, c.client.State())
+	mbox := c.client.Mailbox()
+	require.NotNil(t, mbox)
+	assert.Equal(t, "INBOX", mbox.Name)
+}
+
+func TestFetchMessages_SurvivesReconnect(t *testing.T) {
+	opts, cleanup := newTestIMAPServer(t)
+	defer cleanup()
+
+	c, err := Connect(opts)
+	require.NoError(t, err)
+	defer c.Close()
+
+	appendTestMsgs(t, opts, "INBOX", 2)
+
+	_, err = c.SelectMailboxWithContext(context.Background(), "INBOX")
+	require.NoError(t, err)
+
+	uids, err := c.SearchAllWithContext(context.Background())
+	require.NoError(t, err)
+	require.Len(t, uids, 2)
+
+	// Simulate a mid-sync network drop: force-close the underlying connection
+	// so the next UID FETCH fails and triggers reconnect. Without re-selecting
+	// the mailbox on reconnect, Gmail-style servers reject the retried UID
+	// FETCH with "BAD UID FETCH not allowed now".
+	c.client.Close() //nolint:errcheck
+
+	imapUIDs := make([]imap2.UID, len(uids))
+	for i, uid := range uids {
+		imapUIDs[i] = imap2.UID(uid)
+	}
+	seqSet := imap2.UIDSetNum(imapUIDs...)
+
+	msgs, err := c.FetchMessagesWithContext(context.Background(), seqSet)
+	require.NoError(t, err)
+	assert.Len(t, msgs, 2)
+}
+
+func TestSearchAll_SurvivesReconnect(t *testing.T) {
+	opts, cleanup := newTestIMAPServer(t)
+	defer cleanup()
+
+	c, err := Connect(opts)
+	require.NoError(t, err)
+	defer c.Close()
+
+	appendTestMsgs(t, opts, "INBOX", 3)
+
+	_, err = c.SelectMailboxWithContext(context.Background(), "INBOX")
+	require.NoError(t, err)
+
+	// Drop the connection before the UID SEARCH so withRetry must reconnect
+	// and re-select INBOX before retrying.
+	c.client.Close() //nolint:errcheck
+
+	uids, err := c.SearchAllWithContext(context.Background())
+	require.NoError(t, err)
+	assert.Len(t, uids, 3)
 }
 
 func TestListMailboxes(t *testing.T) {

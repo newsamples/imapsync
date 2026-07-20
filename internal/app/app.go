@@ -21,27 +21,30 @@ var (
 	Log     = logrus.New()
 )
 
-var RootCmd = &cobra.Command{
-	Use:   "imapsync",
-	Short: "IMAP email backup tool",
-	Long:  "A tool to backup emails from IMAP servers to local storage using badgerdb",
-}
+// NewRootCommand builds the root cobra command with all flags and subcommands
+// wired up. Constructing the command explicitly (rather than in an init()
+// function) keeps setup ordering visible and testable.
+func NewRootCommand() *cobra.Command {
+	rootCmd := &cobra.Command{
+		Use:   "imapsync",
+		Short: "IMAP email backup tool",
+		Long:  "A tool to backup emails from IMAP servers to local storage using badgerdb",
+	}
 
-var syncCmd = &cobra.Command{
-	Use:   "sync",
-	Short: "Sync emails from IMAP server",
-	RunE:  RunSync,
-}
+	syncCmd := &cobra.Command{
+		Use:   "sync",
+		Short: "Sync emails from IMAP server",
+		RunE:  RunSync,
+	}
 
-var serverCmd = &cobra.Command{
-	Use:   "serve",
-	Short: "Start web server to browse emails",
-	RunE:  RunServer,
-}
+	serverCmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Start web server to browse emails",
+		RunE:  RunServer,
+	}
 
-func init() {
-	RootCmd.PersistentFlags().StringVarP(&CfgFile, "config", "c", "config.yaml", "config file path")
-	RootCmd.PersistentFlags().Bool("verbose", false, "enable verbose logging")
+	rootCmd.PersistentFlags().StringVarP(&CfgFile, "config", "c", "config.yaml", "config file path")
+	rootCmd.PersistentFlags().Bool("verbose", false, "enable verbose logging")
 
 	syncCmd.Flags().Bool("progress", false, "show progress bars")
 	syncCmd.Flags().Bool("watch", false, "watch for changes and sync continuously")
@@ -49,14 +52,16 @@ func init() {
 
 	serverCmd.Flags().String("addr", ":8080", "server address to listen on")
 
-	RootCmd.AddCommand(syncCmd)
-	RootCmd.AddCommand(serverCmd)
+	rootCmd.AddCommand(syncCmd)
+	rootCmd.AddCommand(serverCmd)
 
-	cobra.OnInitialize(InitConfig)
+	cobra.OnInitialize(func() { InitConfig(rootCmd) })
+
+	return rootCmd
 }
 
-func InitConfig() {
-	if verbose, _ := RootCmd.PersistentFlags().GetBool("verbose"); verbose {
+func InitConfig(rootCmd *cobra.Command) {
+	if verbose, _ := rootCmd.PersistentFlags().GetBool("verbose"); verbose {
 		Log.SetLevel(logrus.DebugLevel)
 	} else {
 		Log.SetLevel(logrus.InfoLevel)

@@ -349,6 +349,9 @@ func (s *Server) writeJSON(w http.ResponseWriter, data interface{}) {
 }
 
 func (s *Server) getUIHTML() string {
+	// The page is stored as a Go raw-string literal, which cannot contain a
+	// backtick. JavaScript template literals therefore use the {BT} sentinel,
+	// which is replaced with a real backtick at render time.
 	return strings.TrimSpace(strings.ReplaceAll(`
 <!DOCTYPE html>
 <html>
@@ -563,12 +566,12 @@ func (s *Server) getUIHTML() string {
             const mailboxes = await res.json();
 
             const container = document.getElementById('mailboxes');
-            container.innerHTML = mailboxes.map(mb => §
+            container.innerHTML = mailboxes.map(mb => {BT}
                 <div class="mailbox-item" data-mailbox="${escapeHtml(mb.name)}">
                     <div class="mailbox-name">${escapeHtml(mb.name)}</div>
                     <div class="mailbox-count">${mb.count || 0}</div>
                 </div>
-            §).join('');
+            {BT}).join('');
 
             document.querySelectorAll('.mailbox-item').forEach(el => {
                 el.addEventListener('click', () => {
@@ -593,7 +596,7 @@ func (s *Server) getUIHTML() string {
             const container = document.getElementById('emails');
             container.innerHTML = '<div class="loading">Loading...</div>';
 
-            const res = await fetch(§/api/v1/mailboxes/${encodeURIComponent(mailbox)}/emails?page=${page}&limit=${pageLimit}§);
+            const res = await fetch({BT}/api/v1/mailboxes/${encodeURIComponent(mailbox)}/emails?page=${page}&limit=${pageLimit}{BT});
             const data = await res.json();
 
             if (!data.emails || data.emails.length === 0) {
@@ -605,13 +608,13 @@ func (s *Server) getUIHTML() string {
             totalPages = data.total_pages || 1;
             updatePagination();
 
-            container.innerHTML = data.emails.map(email => §
+            container.innerHTML = data.emails.map(email => {BT}
                 <div class="email-item" data-mailbox="${escapeHtml(mailbox)}" data-uid="${email.uid}">
                     <div class="email-subject">${escapeHtml(email.subject || '(No Subject)')}</div>
                     <div class="email-from">${escapeHtml(email.from || '(Unknown)')}</div>
                     <div class="email-date">${new Date(email.date).toLocaleString()}</div>
                 </div>
-            §).join('');
+            {BT}).join('');
 
             document.querySelectorAll('.email-item').forEach(el => {
                 el.addEventListener('click', function() {
@@ -632,7 +635,7 @@ func (s *Server) getUIHTML() string {
         }
 
         function updatePagination() {
-            document.getElementById('page-info').textContent = §Page ${currentPage} of ${totalPages}§;
+            document.getElementById('page-info').textContent = {BT}Page ${currentPage} of ${totalPages}{BT};
             document.getElementById('first-page').disabled = currentPage === 1;
             document.getElementById('prev-page').disabled = currentPage === 1;
             document.getElementById('next-page').disabled = currentPage === totalPages;
@@ -647,11 +650,11 @@ func (s *Server) getUIHTML() string {
                 }
             });
 
-            const res = await fetch(§/api/v1/mailboxes/${encodeURIComponent(mailbox)}/emails/${uid}§);
+            const res = await fetch({BT}/api/v1/mailboxes/${encodeURIComponent(mailbox)}/emails/${uid}{BT});
             const email = await res.json();
 
             const viewer = document.querySelector('.email-viewer');
-            viewer.innerHTML = §
+            viewer.innerHTML = {BT}
                 <div class="email-header">
                     <div class="email-header-top">
                         <h1>${escapeHtml(email.subject || '(No Subject)')}</h1>
@@ -669,7 +672,7 @@ func (s *Server) getUIHTML() string {
                     </div>
                 </div>
                 <div class="email-body" id="email-body-content"></div>
-            §;
+            {BT};
 
             renderEmailBody(email.body);
         }
@@ -719,7 +722,7 @@ func (s *Server) getUIHTML() string {
     </script>
 </body>
 </html>
-`, "§", "\x60"))
+`, "{BT}", "\x60"))
 }
 
 func (s *Server) Run(addr string) error {

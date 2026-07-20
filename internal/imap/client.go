@@ -26,6 +26,7 @@ type Client struct {
 	fetchGmailLabels bool
 	mu               sync.Mutex
 	unilateralNotify func()
+	selectedMailbox  string
 }
 
 type ConnectOptions struct {
@@ -148,6 +149,22 @@ func (c *Client) reconnect(ctx context.Context) error {
 		}
 
 		c.log.Info("Reconnected successfully")
+
+		// Restore the previously selected mailbox. UID-based commands (FETCH,
+		// SEARCH) require a mailbox to be selected; a fresh connection is only
+		// in the authenticated state, so without this the retried command would
+		// fail with "BAD UID FETCH not allowed now".
+		c.mu.Lock()
+		mailbox := c.selectedMailbox
+		c.mu.Unlock()
+
+		if mailbox != "" {
+			if _, err := c.client.Select(mailbox, nil).Wait(); err != nil {
+				c.log.WithError(err).Warnf("Failed to reselect mailbox %s after reconnect", mailbox)
+				continue
+			}
+		}
+
 		return nil
 	}
 
@@ -277,6 +294,12 @@ func (c *Client) SelectMailbox(name string) (*imap.SelectData, error) {
 
 func (c *Client) SelectMailboxWithContext(ctx context.Context, name string) (*imap.SelectData, error) {
 	var data *imap.SelectData
+
+	// Record the target mailbox before selecting so that a reconnect triggered
+	// mid-select restores this mailbox rather than the previously selected one.
+	c.mu.Lock()
+	c.selectedMailbox = name
+	c.mu.Unlock()
 
 	err := c.withRetry(ctx, func() error {
 		var err error

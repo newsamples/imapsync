@@ -206,10 +206,7 @@ func (s *Syncer) SyncMailbox(ctx context.Context, mailbox string) (*Stats, error
 	for i := 0; i < len(uidsToSync); i += batchSize {
 		select {
 		case <-ctx.Done():
-			if bar != nil {
-				bar.Finish()
-				fmt.Println()
-			}
+			finishBarPartial(bar)
 			return nil, ctx.Err()
 		default:
 		}
@@ -221,16 +218,9 @@ func (s *Syncer) SyncMailbox(ctx context.Context, mailbox string) (*Stats, error
 
 		batch := uidsToSync[i:end]
 		if err := s.syncBatch(ctx, mailbox, batch, bar); err != nil {
+			finishBarPartial(bar)
 			if ctx.Err() != nil {
-				if bar != nil {
-					bar.Finish()
-					fmt.Println()
-				}
 				return nil, ctx.Err()
-			}
-			if bar != nil {
-				bar.Finish()
-				fmt.Println()
 			}
 			return nil, fmt.Errorf("failed to sync batch: %w", err)
 		}
@@ -259,7 +249,7 @@ func (s *Syncer) SyncMailbox(ctx context.Context, mailbox string) (*Stats, error
 }
 
 // purgeOldDeleted removes soft-deleted emails whose deleted_at is older than
-// the configured retention window. Errors are logged but not returned — an
+// the configured retention window. Errors are logged but not returned - an
 // occasional purge failure should not block an otherwise-healthy sync.
 func (s *Syncer) purgeOldDeleted() {
 	if s.purgeAfterDays <= 0 {
@@ -345,6 +335,18 @@ func (s *Syncer) syncBatch(ctx context.Context, mailbox string, uids []uint32, b
 	}
 
 	return nil
+}
+
+// finishBarPartial stops the progress bar while preserving its current
+// position, so a mailbox that failed or was cancelled mid-sync does not
+// misleadingly render as 100% complete. A trailing newline moves the cursor
+// off the bar line so subsequent log output stays readable.
+func finishBarPartial(bar *progressbar.ProgressBar) {
+	if bar == nil {
+		return
+	}
+	_ = bar.Exit()
+	fmt.Println()
 }
 
 func (s *Syncer) convertToEmail(mailbox string, msg *imap.Message) *storage.Email {

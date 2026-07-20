@@ -17,11 +17,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNewRootCommand(t *testing.T) {
+	rootCmd := NewRootCommand()
+	require.NotNil(t, rootCmd)
+	assert.Equal(t, "imapsync", rootCmd.Use)
+
+	require.NotNil(t, rootCmd.PersistentFlags().Lookup("config"))
+	require.NotNil(t, rootCmd.PersistentFlags().Lookup("verbose"))
+
+	names := make([]string, 0, len(rootCmd.Commands()))
+	for _, c := range rootCmd.Commands() {
+		names = append(names, c.Name())
+	}
+	assert.Contains(t, names, "sync")
+	assert.Contains(t, names, "serve")
+}
+
 func TestInitConfig_Verbose(t *testing.T) {
-	require.NoError(t, RootCmd.PersistentFlags().Set("verbose", "true"))
-	InitConfig()
-	require.NoError(t, RootCmd.PersistentFlags().Set("verbose", "false"))
-	InitConfig()
+	rootCmd := NewRootCommand()
+	require.NoError(t, rootCmd.PersistentFlags().Set("verbose", "true"))
+	InitConfig(rootCmd)
+	require.NoError(t, rootCmd.PersistentFlags().Set("verbose", "false"))
+	InitConfig(rootCmd)
 }
 
 func writeInvalidConfig(t *testing.T) string {
